@@ -1,7 +1,7 @@
 import YAML from 'yaml';
-import path from 'path';
-import fs from 'fs';
-import { ICEServer } from './ICEServer';
+import path from 'node:path';
+import fs from 'node:fs';
+import type { ICEServer } from './ICEServer';
 
 const PEER_CONFIG_PATH = path.join(__dirname, '..', 'config', 'peerConfig.yml');
 

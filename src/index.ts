@@ -1,18 +1,18 @@
 import dotenv from 'dotenv';
 dotenv.config();
 import express from 'express';
-import { Server } from 'http';
-import { Server as HttpsServer } from 'https';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { Server as SocketIOServer, Socket } from 'socket.io';
+import { Server } from 'node:http';
+import { Server as HttpsServer } from 'node:https';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { Server as SocketIOServer, type Socket } from 'socket.io';
 import logger from './logger';
 import morgan from 'morgan';
 import peerConfig from './peerConfig';
-import { ICEServer } from './ICEServer';
-import { PublicLobby } from './interfaces/publicLobby';
+import type { ICEServer } from './ICEServer';
+import type { PublicLobby } from './interfaces/publicLobby';
 import { GameState } from './interfaces/gameState';
-import { lobbyInfo } from './interfaces/lobbyInfo';
+import type { lobbyInfo } from './interfaces/lobbyInfo';
 
 const httpsEnabled = !!process.env.HTTPS;
 
@@ -90,12 +90,12 @@ app.use(morgan('combined'));
 let connectionCount = 0;
 
 app.get('/', (req, res) => {
-	let address = req.protocol + '://' + req.hostname;
+	const address = `${req.protocol}://${req.hostname}`;
 	res.render('index', { connectionCount, address, lobbiesCount: allLobbies.size });
 });
 
 app.get('/health', (req, res) => {
-	let address = req.protocol + '://' + req.hostname;
+	const address = `${req.protocol}://${req.hostname}`;
 	res.json({
 		uptime: process.uptime(),
 		connectionCount,
@@ -105,7 +105,7 @@ app.get('/health', (req, res) => {
 	});
 });
 
-app.get('/lobbies', (req, res) => {
+app.get('/lobbies', (_req, res) => {
 	res.json(Array.from(publicLobbies.values()));
 });
 
@@ -143,17 +143,13 @@ io.on('connection', (socket: Socket) => {
 	socket.emit('clientPeerConfig', clientPeerConfig);
 
 	socket.on('join', (c: string, id: number, clientId: number, isHost?: boolean) => {
-		if (
-			typeof c !== 'string' ||
-			typeof id !== 'number' ||
-			typeof clientId !== 'number' 
-		) {
+		if (typeof c !== 'string' || typeof id !== 'number' || typeof clientId !== 'number') {
 			socket.disconnect();
 			logger.error(`Socket %s sent invalid join command: %s %d %d`, socket.id, c, id, clientId);
 			return;
 		}
 
-		let otherClients: any = {};
+		const otherClients: Record<string, Client | undefined> = {};
 		const socketsInLobby = io.sockets.adapter.rooms.get(c);
 		if (socketsInLobby) {
 			for (const s of socketsInLobby) {
@@ -227,7 +223,7 @@ io.on('connection', (socket: Socket) => {
 	});
 
 	socket.on('VAD', (activity: boolean) => {
-		let client = clients.get(socket.id);
+		const client = clients.get(socket.id);
 		if (code && client) {
 			socket.to(code).emit('VAD', {
 				activity,
@@ -268,7 +264,7 @@ io.on('connection', (socket: Socket) => {
 					(publobby.gameState !== GameState.LOBBY && publicLobby.gameState !== GameState.LOBBY))
 					? publobby.stateTime
 					: Date.now();
-			let lobby: PublicLobby = {
+			const lobby: PublicLobby = {
 				id,
 				title: publicLobby.title?.substring(0, 20) ?? 'ERROR',
 				host: publicLobby.host?.substring(0, 10) ?? '',
@@ -322,7 +318,6 @@ io.on('connection', (socket: Socket) => {
 		clients.delete(socket.id);
 		connectionCount--;
 		logger.info('Total connected: %d in %d lobbies', connectionCount, allLobbies.size);
-
 	});
 });
 

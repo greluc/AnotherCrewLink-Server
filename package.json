@@ -15,13 +15,17 @@
 		"build": "tsc",
 		"start": "npm run build && node dist/index.js",
 		"compile": "tsc",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check src",
+		"lint:fix": "biome check --write src",
 		"audit": "npm audit --audit-level=high"
 	},
 	"devDependencies": {
+		"@biomejs/biome": "^2.5.10",
 		"@types/express": "^5.0.6",
 		"@types/morgan": "^1.9.10",
-		"typescript": "^6.0.3",
-		"@types/node": "^22.20.0"
+		"@types/node": "^22.20.0",
+		"typescript": "^7.0.2"
 	},
 	"engines": {
 		"node": ">=20"

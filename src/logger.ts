@@ -1,4 +1,4 @@
-import { format } from 'util';
+import { format } from 'node:util';
 
 /**
  * Replaces tracer, which was last published in 2023. The server only ever used

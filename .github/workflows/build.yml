@@ -27,6 +27,9 @@ jobs:
       - name: Audit Dependencies
         run: npm audit --audit-level=high
 
+      - name: Lint
+        run: npm run lint
+
       - name: Compile
         run: npm run build
 
