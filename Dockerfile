@@ -1,7 +1,7 @@
 #################################################
 # Common base image
 #################################################
-FROM node:22-alpine AS common
+FROM node:24-alpine AS common
 RUN mkdir /app && chown node:node /app
 WORKDIR /app
 USER node
