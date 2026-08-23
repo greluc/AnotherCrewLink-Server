@@ -109,6 +109,19 @@ app.get('/lobbies', (_req, res) => {
 	res.json(Array.from(publicLobbies.values()));
 });
 
+/**
+ * Coerces one field of an incoming lobby payload. Clients are unauthenticated, so
+ * every field is whatever they chose to send; calling .substring() on a number threw
+ * straight out of the socket handler and took the process down with it.
+ */
+function asText(value: unknown, maxLength: number): string {
+	return typeof value === 'string' ? value.substring(0, maxLength) : '';
+}
+
+function asCount(value: unknown): number {
+	return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
 const leaveroom = (socket: Socket, code: string | null) => {
 	if (!code) {
 		return;
@@ -122,6 +135,16 @@ const leaveroom = (socket: Socket, code: string | null) => {
 		removePublicLobby(code);
 	}
 };
+// A throw inside a socket handler reaches the process as an uncaught exception and
+// ends it. Clients are unauthenticated, so that turns any unhandled edge case into a
+// remote denial of service. Log and keep serving instead.
+process.on('uncaughtException', (error) => {
+	logger.error('Uncaught exception, continuing: %s', error instanceof Error ? error.stack : String(error));
+});
+process.on('unhandledRejection', (reason) => {
+	logger.error('Unhandled rejection, continuing: %s', reason instanceof Error ? reason.stack : String(reason));
+});
+
 io.on('connection', (socket: Socket) => {
 	connectionCount++;
 	logger.info('Total connected: %d in %d lobbies', connectionCount, allLobbies.size);
@@ -249,6 +272,10 @@ io.on('connection', (socket: Socket) => {
 	});
 
 	socket.on('lobby', (c: string, publicLobby: PublicLobby) => {
+		if (typeof c !== 'string' || typeof publicLobby !== 'object' || publicLobby === null) {
+			logger.error('Socket %s sent an invalid lobby command', socket.id);
+			return;
+		}
 		if (code != c) {
 			logger.error(`Got request to host lobby while not in it %s`, c, code);
 			return;
@@ -266,15 +293,15 @@ io.on('connection', (socket: Socket) => {
 					: Date.now();
 			const lobby: PublicLobby = {
 				id,
-				title: publicLobby.title?.substring(0, 20) ?? 'ERROR',
-				host: publicLobby.host?.substring(0, 10) ?? '',
-				current_players: publicLobby.current_players ?? 0,
-				max_players: publicLobby.max_players ?? 0,
-				language: publicLobby.language?.substring(0, 5) ?? '',
-				mods: publicLobby.mods?.substring(0, 20)?.toUpperCase() ?? '',
-				isPublic: publicLobby.isPublic || publicLobby.isPublic2 || false,
-				server: publicLobby.server,
-				gameState: publicLobby.gameState,
+				title: asText(publicLobby.title, 20) || 'ERROR',
+				host: asText(publicLobby.host, 10),
+				current_players: asCount(publicLobby.current_players),
+				max_players: asCount(publicLobby.max_players),
+				language: asText(publicLobby.language, 5),
+				mods: asText(publicLobby.mods, 20).toUpperCase(),
+				isPublic: publicLobby.isPublic === true || publicLobby.isPublic2 === true,
+				server: asText(publicLobby.server, 100),
+				gameState: asCount(publicLobby.gameState),
 				stateTime,
 			};
 			lobbyCodes.set(id, c);
