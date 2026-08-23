@@ -1,14 +1,14 @@
 # IN ORDER TO USE THIS CONFIG FILE, RENAME IT AND REMOVE THE ".example" PART OF THE FILENAME!
 #
-# CrewLink peer to peer connection configuration.
+# AnotherCrewLink peer to peer connection configuration.
 #
-# This file lets you modify how CrewLink connects players to each other.
+# This file lets you modify how AnotherCrewLink connects players to each other.
 #
-# CrewLink uses peer to peer connections to establish voice calls between players. This means that every player has to
-# be able to connect to every other player some way or another in order for CrewLink to work. Below you can tweak the
-# mechanisms CrewLink uses to establish peer to peer connections.
+# AnotherCrewLink uses peer to peer connections to establish voice calls between players. This means that every player has to
+# be able to connect to every other player some way or another in order for AnotherCrewLink to work. Below you can tweak the
+# mechanisms AnotherCrewLink uses to establish peer to peer connections.
 
-# Force CrewLink to only work through TURN servers. This is great if you want to protect the IP addresses of players
+# Force AnotherCrewLink to only work through TURN servers. This is great if you want to protect the IP addresses of players
 # as no direct connection will be made. At least one TURN server is required if set to true.
 forceRelayOnly: false
 

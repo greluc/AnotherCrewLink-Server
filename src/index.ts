@@ -55,7 +55,7 @@ if (peerConfig.integratedRelay.enabled) {
 		listeningPort: peerConfig.integratedRelay.listeningPort,
 		authMech: 'long-term',
 		debugLevel: peerConfig.integratedRelay.debugLevel,
-		realm: 'crewlink',
+		realm: 'anothercrewlink',
 		debug: (level: string, message: string) => {
 			turnLogger[level.toLowerCase()](message);
 		},
@@ -375,4 +375,4 @@ io.on('connection', (socket: Socket) => {
 });
 
 server.listen(port);
-logger.info('BetterCrewLink Server started: 127.0.0.1:%s', port);
+logger.info('AnotherCrewLink Server started: 127.0.0.1:%s', port);

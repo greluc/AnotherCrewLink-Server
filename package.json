@@ -1,6 +1,6 @@
 {
-	"name": "crewlink-server",
-	"version": "1.0.1",
+	"name": "anothercrewlink-server",
+	"version": "1.0.0",
 	"main": "index.js",
 	"license": "GPL-3.0-or-later",
 	"dependencies": {
@@ -33,5 +33,14 @@
 			"js-yaml": "^4.1.0",
 			"log4js": "^6.9.1"
 		}
+	},
+	"description": "Voice relay server for AnotherCrewLink",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/greluc/AnotherCrewLink-server.git"
+	},
+	"author": {
+		"name": "Lucas Greuloch",
+		"email": "lucas.greuloch@pm.me"
 	}
 }
