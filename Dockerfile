@@ -16,7 +16,6 @@ RUN npm ci --omit=dev && npm cache clean --force
 FROM common AS build
 RUN npm ci
 COPY --chown=node:node src/ src/
-COPY --chown=node:node types/ types/
 RUN npm run build
 
 #################################################
