@@ -6,7 +6,7 @@ import { Server as HttpsServer } from 'https';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { Server as SocketIOServer, Socket } from 'socket.io';
-import Tracer from 'tracer';
+import logger from './logger';
 import morgan from 'morgan';
 import peerConfig from './peerConfig';
 import { ICEServer } from './ICEServer';
@@ -19,10 +19,6 @@ const httpsEnabled = !!process.env.HTTPS;
 const port = process.env.PORT || (httpsEnabled ? '443' : '9736');
 
 const sslCertificatePath = process.env.SSLPATH || process.cwd();
-
-const logger = Tracer.colorConsole({
-	format: '{{timestamp}} <{{title}}> {{message}}',
-});
 
 const app = express();
 let server: HttpsServer | Server;
