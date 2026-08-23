@@ -40,6 +40,11 @@ jobs:
       - name: Compile
         run: npm run build
 
+      # Starts the built server and drives it over socket.io, so the lobby bookkeeping
+      # is checked the way a client sees it.
+      - name: Test
+        run: npx vitest run
+
   docker:
     runs-on: ubuntu-latest
     steps:

@@ -16,16 +16,20 @@
 		"start": "npm run build && node dist/index.js",
 		"compile": "tsc",
 		"typecheck": "tsc --noEmit",
-		"lint": "biome check src",
-		"lint:fix": "biome check --write src",
-		"audit": "npm audit --audit-level=high"
+		"lint": "biome check src test",
+		"lint:fix": "biome check --write src test",
+		"audit": "npm audit --audit-level=high",
+		"test": "npm run build && vitest run",
+		"test:watch": "vitest"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.10",
 		"@types/express": "^5.0.6",
 		"@types/morgan": "^1.9.10",
 		"@types/node": "^24.13.3",
-		"typescript": "^7.0.2"
+		"socket.io-client": "^4.8.3",
+		"typescript": "^7.0.2",
+		"vitest": "^4.1.11"
 	},
 	"engines": {
 		"node": ">=22"

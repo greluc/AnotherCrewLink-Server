@@ -128,6 +128,17 @@ const leaveroom = (socket: Socket, code: string | null) => {
 	}
 	if (code && (code.length === 6 || code.length === 4)) socket.leave(code);
 
+	// Nobody was told when a player went away. The others noticed only because the
+	// peer connection eventually failed, which is indistinguishable from a connection
+	// that broke while both players are still in the lobby, so a client could not tell
+	// whether rebuilding it was worth trying.
+	socket.to(code).emit('left', socket.id);
+
+	const lobby = allLobbies.get(code);
+	if (lobby) {
+		lobby.connectedCount = Math.max(0, lobby.connectedCount - 1);
+	}
+
 	if ((io.sockets.adapter.rooms.get(code)?.size ?? 0) <= 0) {
 		if (allLobbies.has(code)) {
 			allLobbies.delete(code);
@@ -241,7 +252,11 @@ io.on('connection', (socket: Socket) => {
 	socket.on('leave', () => {
 		if (code) {
 			leaveroom(socket, code);
-			clients.delete(socket.id); // @ts-ignore
+			clients.delete(socket.id);
+			// The socket is out of the lobby now. Leaving `code` set meant the disconnect
+			// handler ran leaveroom a second time for the same lobby, announcing the same
+			// departure twice and taking the occupant count down twice.
+			code = null;
 		}
 	});
 
