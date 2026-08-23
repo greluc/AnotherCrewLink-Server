@@ -1,16 +1,21 @@
 {
 	"compilerOptions": {
 		"target": "ES2022",
-		"lib": ["ES2022"],
-		"module": "commonjs",
-		"moduleResolution": "node",
+		"lib": [
+			"ES2022"
+		],
+		"module": "node16",
+		"moduleResolution": "node16",
 		"outDir": "dist",
-		"baseUrl": ".",
+		"rootDir": "src",
 		"esModuleInterop": true,
 		"forceConsistentCasingInFileNames": true,
 		"noImplicitAny": true,
 		"skipLibCheck": true,
 		"sourceMap": true
 	},
-	"include": ["src/**/*", "types/node-turn/index.d.ts"]
+	"include": [
+		"src/**/*",
+		"types/node-turn/index.d.ts"
+	]
 }

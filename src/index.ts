@@ -93,8 +93,9 @@ const allLobbies = new Map<string, lobbyInfo>();
 let lobbyCount = 0;
 
 function removePublicLobby(c: string) {
-	if (publicLobbies.has(c)) {
-		let pid = publicLobbies.get(c).id;
+	const lobby = publicLobbies.get(c);
+	if (lobby) {
+		const pid = lobby.id;
 		io.sockets.in('lobbybrowser').emit('remove_lobby', pid);
 		lobbyCodes.delete(pid);
 		publicLobbies.delete(c);
@@ -149,7 +150,7 @@ app.get('/lobbies', (req, res) => {
 	res.json(Array.from(publicLobbies.values()));
 });
 
-const leaveroom = (socket: Socket, code: string) => {
+const leaveroom = (socket: Socket, code: string | null) => {
 	if (!code) {
 		return;
 	}
@@ -207,12 +208,15 @@ io.on('connection', (socket: Socket) => {
 		if (!allLobbies.has(c)) {
 			allLobbies.set(c, { code: c, hostId: isHost ? clientId : -1, publicLobbyId: -1, connectedCount: 1 });
 		} else {
-			allLobbies.get(c).connectedCount++;
+			const lobby = allLobbies.get(c)!;
+			lobby.connectedCount++;
 			if (isHost) {
-				allLobbies.get(c).hostId = clientId;
-				socket.to(code).emit('setHost', clientId);
+				lobby.hostId = clientId;
+				// `c`, not `code`: code still holds the room this socket was in before
+				// this join, so the host announcement went to the wrong room entirely.
+				socket.to(c).emit('setHost', clientId);
 			}
-			socket.emit('setHost', allLobbies.get(c).hostId);
+			socket.emit('setHost', lobby.hostId);
 		}
 
 		if (code != c) leaveroom(socket, code);
@@ -227,9 +231,10 @@ io.on('connection', (socket: Socket) => {
 
 	socket.on('setHost', (c: string, clientId: number) => {
 		if (code === c) {
-			if (allLobbies.has(c)) {
-				allLobbies.get(c).hostId = clientId;
-				socket.to(code).emit('setHost', clientId);
+			const lobby = allLobbies.get(c);
+			if (lobby) {
+				lobby.hostId = clientId;
+				socket.to(c).emit('setHost', clientId);
 			}
 		}
 	});
@@ -253,7 +258,9 @@ io.on('connection', (socket: Socket) => {
 			clientId: clientId,
 		};
 		clients.set(socket.id, client);
-		socket.to(code).emit('setClient', socket.id, client);
+		if (code) {
+			socket.to(code).emit('setClient', socket.id, client);
+		}
 	});
 
 	socket.on('leave', () => {
@@ -276,9 +283,9 @@ io.on('connection', (socket: Socket) => {
 
 	socket.on('join_lobby', (id: number, callbackFn) => {
 		//ban check etc...
-		if (lobbyCodes.has(id) && publicLobbies.has(lobbyCodes.get(id))) {
-			let lobbyCode = lobbyCodes.get(id);
-			let publicLobby = publicLobbies.get(lobbyCode);
+		const lobbyCode = lobbyCodes.get(id);
+		const publicLobby = lobbyCode === undefined ? undefined : publicLobbies.get(lobbyCode);
+		if (lobbyCode !== undefined && publicLobby) {
 			if (publicLobby.isPublic && publicLobby.gameState === GameState.LOBBY) {
 				callbackFn(0, lobbyCode, publicLobby.server, publicLobby);
 				return;
@@ -313,7 +320,7 @@ io.on('connection', (socket: Socket) => {
 				max_players: publicLobby.max_players ?? 0,
 				language: publicLobby.language?.substring(0, 5) ?? '',
 				mods: publicLobby.mods?.substring(0, 20)?.toUpperCase() ?? '',
-				isPublic: publicLobby.isPublic || publicLobby.isPublic2,
+				isPublic: publicLobby.isPublic || publicLobby.isPublic2 || false,
 				server: publicLobby.server,
 				gameState: publicLobby.gameState,
 				stateTime,

@@ -9,7 +9,8 @@ interface IntegratedRelaySettings {
 	enabled: boolean;
 	listeningIps: string[];
 	relayIps: string[];
-	externalIps: string[];
+	// node-turn treats this as optional; the example config leaves it unset.
+	externalIps?: string[];
 	minPort: number;
 	maxPort: number;
 	listeningPort: number;
@@ -30,7 +31,7 @@ const DEFAULT_PEER_CONFIG: PeerConfig = {
 		enabled: false,
 		listeningIps: ['0.0.0.0'],
 		relayIps: [],
-		externalIps : null,
+		externalIps: undefined,
 		minPort: 49152,
 		maxPort: 65535,
 		listeningPort: 3478,
