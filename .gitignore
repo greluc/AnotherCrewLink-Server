@@ -1,4 +1,4 @@
-dist/
 node_modules/
-config/*
-!config/*.example.*
+dist/
+.env
+config/peerConfig.yml

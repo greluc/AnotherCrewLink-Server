@@ -1,34 +1,30 @@
 #################################################
 # Common base image
 #################################################
-FROM node:14-alpine as common
+FROM node:22-alpine AS common
 RUN mkdir /app && chown node:node /app
 WORKDIR /app
 USER node
 
-# Cache node_modules installation as they change
-# less than code over time.
-COPY package.json yarn.lock tsconfig.json ./
-RUN yarn install --production && \
-    rm -rf ~/.cache /tmp/v8-compile-cache-1000
+# Cache dependency installation as it changes less often than source.
+COPY --chown=node:node package.json package-lock.json tsconfig.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
 #################################################
 # Compile stage
 #################################################
-FROM common as build
-RUN yarn install
-COPY src/ src/
-RUN yarn compile
+FROM common AS build
+RUN npm ci
+COPY --chown=node:node src/ src/
+COPY --chown=node:node types/ types/
+RUN npm run build
 
 #################################################
 # Production stage
 #################################################
 FROM common
-COPY views/ views/
-# It's a toss up on which order offsets and src
-# should be. Offsets are gauranteed to change
-# over time, but src has more changes in `git log`.
-COPY public/ public/
-COPY --from=build /app/dist/ dist
+COPY --chown=node:node views/ views/
+COPY --chown=node:node public/ public/
+COPY --chown=node:node --from=build /app/dist/ dist
 EXPOSE 9736
 CMD ["node", "dist/index.js"]

@@ -5,7 +5,7 @@ import { Server } from 'http';
 import { Server as HttpsServer } from 'https';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import socketIO from 'socket.io';
+import { Server as SocketIOServer, Socket } from 'socket.io';
 import Tracer from 'tracer';
 import morgan from 'morgan';
 import peerConfig from './peerConfig';
@@ -66,7 +66,11 @@ if (peerConfig.integratedRelay.enabled) {
 	turnServer.start();
 }
 
-const io = socketIO(server);
+// socket.io 4 enforces CORS by default. The Electron renderer loads over file://,
+// which sends a null origin, so it has to be allowed explicitly.
+const io = new SocketIOServer(server, {
+	cors: { origin: '*', methods: ['GET', 'POST'] },
+});
 const clients = new Map<string, Client>();
 const publicLobbies = new Map<string, PublicLobby>();
 const lobbyCodes = new Map<number, string>();
@@ -130,20 +134,20 @@ app.get('/lobbies', (req, res) => {
 	res.json(Array.from(publicLobbies.values()));
 });
 
-const leaveroom = (socket: socketIO.Socket, code: string) => {
+const leaveroom = (socket: Socket, code: string) => {
 	if (!code) {
 		return;
 	}
 	if (code && (code.length === 6 || code.length === 4)) socket.leave(code);
 
-	if ((io.sockets.adapter.rooms[code]?.length ?? 0) <= 0) {
+	if ((io.sockets.adapter.rooms.get(code)?.size ?? 0) <= 0) {
 		if (allLobbies.has(code)) {
 			allLobbies.delete(code);
 		}
 		removePublicLobby(code);
 	}
 };
-io.on('connection', (socket: socketIO.Socket) => {
+io.on('connection', (socket: Socket) => {
 	connectionCount++;
 	logger.info('Total connected: %d in %d lobbies', connectionCount, allLobbies.size);
 	let code: string | null = null;
@@ -178,9 +182,9 @@ io.on('connection', (socket: socketIO.Socket) => {
 		}
 
 		let otherClients: any = {};
-		if (io.sockets.adapter.rooms[c]) {
-			let socketsInLobby = Object.keys(io.sockets.adapter.rooms[c].sockets);
-			for (let s of socketsInLobby) {
+		const socketsInLobby = io.sockets.adapter.rooms.get(c);
+		if (socketsInLobby) {
+			for (const s of socketsInLobby) {
 				if (s !== socket.id) otherClients[s] = clients.get(s);
 			}
 		}
@@ -191,7 +195,7 @@ io.on('connection', (socket: socketIO.Socket) => {
 			allLobbies.get(c).connectedCount++;
 			if (isHost) {
 				allLobbies.get(c).hostId = clientId;
-				socket.to(code).broadcast.emit('setHost', clientId);
+				socket.to(code).emit('setHost', clientId);
 			}
 			socket.emit('setHost', allLobbies.get(c).hostId);
 		}
@@ -199,7 +203,7 @@ io.on('connection', (socket: socketIO.Socket) => {
 		if (code != c) leaveroom(socket, code);
 		code = c;
 		socket.join(code);
-		socket.to(code).broadcast.emit('join', socket.id, {
+		socket.to(code).emit('join', socket.id, {
 			playerId: id,
 			clientId: clientId,
 		});
@@ -210,7 +214,7 @@ io.on('connection', (socket: socketIO.Socket) => {
 		if (code === c) {
 			if (allLobbies.has(c)) {
 				allLobbies.get(c).hostId = clientId;
-				socket.to(code).broadcast.emit('setHost', clientId);
+				socket.to(code).emit('setHost', clientId);
 			}
 		}
 	});
@@ -234,7 +238,7 @@ io.on('connection', (socket: socketIO.Socket) => {
 			clientId: clientId,
 		};
 		clients.set(socket.id, client);
-		socket.to(code).broadcast.emit('setClient', socket.id, client);
+		socket.to(code).emit('setClient', socket.id, client);
 	});
 
 	socket.on('leave', () => {
@@ -247,7 +251,7 @@ io.on('connection', (socket: socketIO.Socket) => {
 	socket.on('VAD', (activity: boolean) => {
 		let client = clients.get(socket.id);
 		if (code && client) {
-			socket.to(code).broadcast.emit('VAD', {
+			socket.to(code).emit('VAD', {
 				activity,
 				client,
 				socketId: socket.id,
