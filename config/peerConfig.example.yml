@@ -1,40 +1,32 @@
-# IN ORDER TO USE THIS CONFIG FILE, RENAME IT AND REMOVE THE ".example" PART OF THE FILENAME!
+# Rename this file to peerConfig.yml to use it.
 #
-# AnotherCrewLink peer to peer connection configuration.
-#
-# This file lets you modify how AnotherCrewLink connects players to each other.
-#
-# AnotherCrewLink uses peer to peer connections to establish voice calls between players. This means that every player has to
-# be able to connect to every other player some way or another in order for AnotherCrewLink to work. Below you can tweak the
-# mechanisms AnotherCrewLink uses to establish peer to peer connections.
+# AnotherCrewLink connects players peer to peer, so every player has to be able to
+# reach every other player somehow. This file controls how that is arranged.
 
-# Force AnotherCrewLink to only work through TURN servers. This is great if you want to protect the IP addresses of players
-# as no direct connection will be made. At least one TURN server is required if set to true.
+# Route all audio through a TURN relay instead of connecting players directly. This
+# hides players' IP addresses from each other, at the cost of bandwidth on the relay.
+# Requires a working relay below.
 forceRelayOnly: false
 
-# Settings for the built-in TURN server.
-integratedRelay:
-  enabled: true # Use the-built in relay server if you run a small-scale server for private use.
-  #relayIps: ['192.0.2.1']
-  #listeningIps: ['192.0.2.1']
-  #externalIps: { 'default': '192.0.2.1' }
-  minPort: 49152
-  maxPort: 65535
-  listeningPort: 3478
-  # Can be one of: OFF, FATAL, ERROR, WARN, INFO, DEBUG, TRACE, ALL
-  debugLevel: 'INFO'
-  defaultUsername: 'M9DRVaByiujoXeuYAAAG'
-  defaultPassword: 'TpHR9HQNZ8taxjb3'
-# If you run into performance issues, you may want to look into offloading relay duties to a native TURN/STUN
-# implementation. You can configure them below.
+# A TURN relay to advertise to clients.
+#
+# The relay is a separate service, not part of this server. Use coturn: the bundled
+# docker-compose.yml starts one alongside this server and is wired to these values.
+# The previous built-in relay used node-turn, which has been unmaintained since 2022.
+relay:
+  enabled: false
+  # Defaults to the HOSTNAME environment variable when omitted.
+  #host: turn.example.com
+  port: 3478
+  # CHANGE THESE. Anything published here can be used by anyone to relay traffic
+  # through your server at your expense.
+  username: ''
+  credential: ''
 
-# Custom TURN/STUN servers
+# Additional STUN/TURN servers advertised to clients, in the order they should be
+# tried. Google's public STUN server is enough for direct connections in most cases.
 iceServers:
-  # Google's STUN server is used by default
   - urls: 'stun:stun.l.google.com:19302'
-#   - urls: 'turn:example.com'
-#     username: 'TurnUsername'
-#     credential: 'TurnPassword'
-#   - urls: 'stun:example.com'
-#     username: 'StunUsername'
-#     credential: 'StunPassword'
+  #- urls: 'turn:turn.example.com:3478'
+  #  username: 'TurnUsername'
+  #  credential: 'TurnPassword'

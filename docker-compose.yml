@@ -1,0 +1,34 @@
+# Runs the signalling server together with a coturn relay.
+#
+# Set TURN_USER, TURN_PASSWORD and PUBLIC_HOSTNAME in a .env file next to this one,
+# then put the same credentials into config/peerConfig.yml under `relay`.
+services:
+  server:
+    build: .
+    restart: unless-stopped
+    ports:
+      - '9736:9736'
+    environment:
+      HOSTNAME: ${PUBLIC_HOSTNAME}
+    volumes:
+      - ./config:/app/config:ro
+
+  # coturn is the standard TURN implementation and is actively maintained, which the
+  # previous embedded relay was not. Host networking is used because a TURN relay has
+  # to hand out the ports it actually listens on.
+  coturn:
+    image: coturn/coturn:4.7-alpine
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --listening-port=3478
+      - --min-port=49152
+      - --max-port=65535
+      - --realm=anothercrewlink
+      - --fingerprint
+      - --lt-cred-mech
+      - --user=${TURN_USER}:${TURN_PASSWORD}
+      - --external-ip=${PUBLIC_IP}
+      - --no-cli
+      - --no-tlsv1
+      - --no-tlsv1_1

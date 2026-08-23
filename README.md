@@ -37,16 +37,30 @@ docker run -p 9736:9736 -e HOSTNAME=your.host.name anothercrewlink-server
 ### Peer configuration
 
 Copy `config/peerConfig.example.yml` to `config/peerConfig.yml`. It controls whether
-connections are forced through a relay, the built-in TURN server, and any external
-STUN/TURN servers advertised to clients.
+connections are forced through a relay, which TURN relay clients are told about, and
+any extra STUN/TURN servers.
 
-**Change `defaultUsername` and `defaultPassword` before exposing the integrated relay.**
-The values in the example file are published in this repository, so leaving them in
-place lets anyone relay traffic through your server. The server logs a warning on
-startup if it finds them.
+## TURN relay
 
-For anything beyond small private use, prefer a dedicated TURN server such as coturn
-and list it under `iceServers` instead of enabling the integrated relay.
+Players behind a symmetric NAT cannot connect to each other directly, so a TURN relay
+is what makes those pairs work. This server does not embed one: the relay it used to
+ship, node-turn, has been unmaintained since 2022.
+
+Use [coturn](https://github.com/coturn/coturn) instead. `docker-compose.yml` starts it
+alongside this server:
+
+```bash
+cp .env.example .env          # set PUBLIC_HOSTNAME, PUBLIC_IP and TURN credentials
+cp config/peerConfig.example.yml config/peerConfig.yml
+# put the same credentials under `relay` in peerConfig.yml, and set enabled: true
+docker compose up -d
+```
+
+coturn needs UDP 3478 and the relay port range (49152-65535 by default) reachable from
+the internet. Generate your own credentials; anything committed to a repository can be
+used by anyone to relay traffic at your expense.
+
+Without a relay the server still works, and most players will still connect directly.
 
 ## Licence
 

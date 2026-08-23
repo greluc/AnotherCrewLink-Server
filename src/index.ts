@@ -13,7 +13,6 @@ import { ICEServer } from './ICEServer';
 import { PublicLobby } from './interfaces/publicLobby';
 import { GameState } from './interfaces/gameState';
 import { lobbyInfo } from './interfaces/lobbyInfo';
-let TurnServer = require('node-turn');
 
 const httpsEnabled = !!process.env.HTTPS;
 
@@ -23,11 +22,6 @@ const sslCertificatePath = process.env.SSLPATH || process.cwd();
 
 const logger = Tracer.colorConsole({
 	format: '{{timestamp}} <{{title}}> {{message}}',
-});
-
-const turnLogger = Tracer.colorConsole({
-	format: '{{timestamp}} <{{title}}> <ice> {{message}}',
-	level: peerConfig.integratedRelay.debugLevel.toLowerCase(),
 });
 
 const app = express();
@@ -44,41 +38,16 @@ if (httpsEnabled) {
 	server = new Server(app);
 }
 
-let turnServer: any | null = null;
-if (peerConfig.integratedRelay.enabled) {
-	turnServer = new TurnServer({
-		listeningIps: peerConfig.integratedRelay.listeningIps,
-		relayIps: peerConfig.integratedRelay.relayIps,
-		externalIps: peerConfig.integratedRelay.externalIps,
-		minPort: peerConfig.integratedRelay.minPort,
-		maxPort: peerConfig.integratedRelay.maxPort,
-		listeningPort: peerConfig.integratedRelay.listeningPort,
-		authMech: 'long-term',
-		debugLevel: peerConfig.integratedRelay.debugLevel,
-		realm: 'anothercrewlink',
-		debug: (level: string, message: string) => {
-			turnLogger[level.toLowerCase()](message);
-		},
-	});
-
-	// These are the credentials shipped in peerConfig.example.yml and published in the
-	// repository, so leaving them in place lets anyone relay traffic through this server.
-	const SHIPPED_DEFAULT_USERNAME = 'M9DRVaByiujoXeuYAAAG';
-	const SHIPPED_DEFAULT_PASSWORD = 'TpHR9HQNZ8taxjb3';
-	if (
-		peerConfig.integratedRelay.defaultUsername === SHIPPED_DEFAULT_USERNAME ||
-		peerConfig.integratedRelay.defaultPassword === SHIPPED_DEFAULT_PASSWORD
-	) {
-		logger.warn(
-			'The integrated TURN relay is using the example credentials from peerConfig.example.yml. ' +
-				'They are public, so anyone can relay traffic through this server. Change defaultUsername ' +
-				'and defaultPassword in config/peerConfig.yml.'
-		);
-	}
-
-	turnServer.addUser(peerConfig.integratedRelay.defaultUsername, peerConfig.integratedRelay.defaultPassword);
-
-	turnServer.start();
+// The TURN relay runs as its own service (coturn); see docker-compose.yml. This only
+// advertises it to clients.
+const hostname = process.env.HOSTNAME;
+const relayHost = peerConfig.relay.host || hostname;
+const relayConfigured = peerConfig.relay.enabled && !!relayHost;
+if (peerConfig.relay.enabled && !relayHost) {
+	logger.error('relay.enabled is set but no relay.host and no HOSTNAME environment variable.');
+}
+if (relayConfigured && (!peerConfig.relay.username || !peerConfig.relay.credential)) {
+	logger.error('relay.enabled is set but relay.username or relay.credential is empty.');
 }
 
 // socket.io 4 enforces CORS by default. The Electron renderer loads over file://,
@@ -124,12 +93,6 @@ app.use(morgan('combined'));
 
 let connectionCount = 0;
 
-let hostname = process.env.HOSTNAME;
-if (!hostname && peerConfig.integratedRelay.enabled) {
-	logger.error('You must set the HOSTNAME environment variable to use the TURN server.');
-	process.exit(1);
-}
-
 app.get('/', (req, res) => {
 	let address = req.protocol + '://' + req.hostname;
 	res.render('index', { connectionCount, address, lobbiesCount: allLobbies.size });
@@ -173,14 +136,11 @@ io.on('connection', (socket: Socket) => {
 		iceServers: peerConfig.iceServers ? [...peerConfig.iceServers] : [],
 	};
 
-	if (turnServer) {
-		//	const turnCredential = crypto.randomBytes(32).toString('base64');
-		//	turnServer.addUser(socket.id, turnCredential);
-		// logger.info(`Adding socket "${socket.id}" as TURN user.`);
+	if (relayConfigured) {
 		clientPeerConfig.iceServers.push({
-			urls: `turn:${hostname}:${peerConfig.integratedRelay.listeningPort}`,
-			username: peerConfig.integratedRelay.defaultUsername,
-			credential: peerConfig.integratedRelay.defaultPassword,
+			urls: `turn:${relayHost}:${peerConfig.relay.port}`,
+			username: peerConfig.relay.username,
+			credential: peerConfig.relay.credential,
 		});
 	}
 
@@ -367,10 +327,6 @@ io.on('connection', (socket: Socket) => {
 		connectionCount--;
 		logger.info('Total connected: %d in %d lobbies', connectionCount, allLobbies.size);
 
-		// if (turnServer) {
-		// 	logger.info(`Removing socket "${socket.id}" as TURN user.`);
-		// 	turnServer.removeUser(socket.id);
-		// }
 	});
 });
 

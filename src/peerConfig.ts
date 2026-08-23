@@ -5,45 +5,32 @@ import { ICEServer } from './ICEServer';
 
 const PEER_CONFIG_PATH = path.join(__dirname, '..', 'config', 'peerConfig.yml');
 
-interface IntegratedRelaySettings {
+// The TURN relay is a separate service now (coturn), not an embedded one. This only
+// describes the relay that clients should be told about.
+interface RelaySettings {
 	enabled: boolean;
-	listeningIps: string[];
-	relayIps: string[];
-	// node-turn treats this as optional; the example config leaves it unset.
-	externalIps?: string[];
-	minPort: number;
-	maxPort: number;
-	listeningPort: number;
-	debugLevel: 'OFF' | 'FATAL' | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'TRACE' | 'ALL';
-	defaultUsername: string;
-	defaultPassword: string;
+	/** Defaults to the HOSTNAME environment variable when omitted. */
+	host?: string;
+	port: number;
+	username: string;
+	credential: string;
 }
 
 interface PeerConfig {
 	forceRelayOnly: boolean;
-	integratedRelay: IntegratedRelaySettings;
+	relay: RelaySettings;
 	iceServers?: ICEServer[];
 }
 
 const DEFAULT_PEER_CONFIG: PeerConfig = {
 	forceRelayOnly: false,
-	integratedRelay: {
+	relay: {
 		enabled: false,
-		listeningIps: ['0.0.0.0'],
-		relayIps: [],
-		externalIps: undefined,
-		minPort: 49152,
-		maxPort: 65535,
-		listeningPort: 3478,
-		debugLevel: 'INFO',
-		defaultUsername: 'M9DRVaByiujoXeuYAAAG',
-		defaultPassword: 'TpHR9HQNZ8taxjb3',
+		port: 3478,
+		username: '',
+		credential: '',
 	},
-	iceServers: [
-		{
-			urls: 'stun:stun.l.google.com:19302',
-		},
-	],
+	iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 };
 
 let peerConfig = DEFAULT_PEER_CONFIG;
