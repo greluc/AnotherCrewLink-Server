@@ -61,6 +61,21 @@ if (peerConfig.integratedRelay.enabled) {
 		},
 	});
 
+	// These are the credentials shipped in peerConfig.example.yml and published in the
+	// repository, so leaving them in place lets anyone relay traffic through this server.
+	const SHIPPED_DEFAULT_USERNAME = 'M9DRVaByiujoXeuYAAAG';
+	const SHIPPED_DEFAULT_PASSWORD = 'TpHR9HQNZ8taxjb3';
+	if (
+		peerConfig.integratedRelay.defaultUsername === SHIPPED_DEFAULT_USERNAME ||
+		peerConfig.integratedRelay.defaultPassword === SHIPPED_DEFAULT_PASSWORD
+	) {
+		logger.warn(
+			'The integrated TURN relay is using the example credentials from peerConfig.example.yml. ' +
+				'They are public, so anyone can relay traffic through this server. Change defaultUsername ' +
+				'and defaultPassword in config/peerConfig.yml.'
+		);
+	}
+
 	turnServer.addUser(peerConfig.integratedRelay.defaultUsername, peerConfig.integratedRelay.defaultPassword);
 
 	turnServer.start();
