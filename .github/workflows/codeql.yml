@@ -1,0 +1,39 @@
+name: CodeQL
+
+concurrency:
+  # Includes the workflow name: without it Build and CodeQL share one group on
+  # the same ref and cancel each other on every push.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  schedule:
+    # Weekly, so newly published queries reach the code even when nothing is pushed.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@4c0873ef8656cb3c50b3f42fb63bc1ade0cfa827 # v4
+        with:
+          languages: javascript-typescript
+
+      # No autobuild step: TypeScript is analysed from source.
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@4c0873ef8656cb3c50b3f42fb63bc1ade0cfa827 # v4
