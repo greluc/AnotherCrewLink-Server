@@ -28,9 +28,11 @@ use crate::state::AppState;
 const SOCKET_BUFFER: usize = 128;
 
 /// The handshake advertises this, and socketioxide enforces it on the polling transport.
-/// It does **not** enforce it on the WebSocket transport, which is the accepted risk
-/// recorded in `docs/rust-port/04-implementation-plan.md`; the per-event size check in
-/// `socket.rs` is what actually bounds a relayed payload.
+/// It is never applied to the WebSocket transport, which is the one this server offers:
+/// there the bound is tungstenite's default of 64 MiB per message. That gap is the
+/// accepted risk recorded in `docs/rust-port/04-implementation-plan.md`; the per-event
+/// size check in `socket.rs` is what actually bounds a relayed payload, after the frame
+/// has already been decoded.
 const MAX_PAYLOAD: u64 = 64 * 1024;
 
 /// A socket that connects and never joins a namespace holds a slot until this expires.

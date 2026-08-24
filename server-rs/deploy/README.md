@@ -333,17 +333,22 @@ reload, so consider leaving it on 9737.
 
 ---
 
-## 5. Accepted risk: no inbound WebSocket frame cap
+## 5. Accepted risk: the inbound WebSocket cap is 64 MiB, not the one you set
 
 Recorded here because it cannot be configured away, and an operator who does not know
 about it will look for a setting that does not exist.
 
-**socketioxide applies no inbound frame cap on the WebSocket transport.** The
-`max_payload` value the server sets governs two things — the size of outbound `emit()`
-payloads, and the number advertised in the Engine.IO handshake — and a hostile client
-simply ignores the advertisement. socketioxide enforces the cap on the polling transport,
-which this server does not offer. So the transport that is actually in use is the one
-without the check.
+**socketioxide never applies `max_payload` to the WebSocket transport.** The value the
+server sets governs two things — the size of outbound `emit()` payloads, and the number
+advertised in the Engine.IO handshake — and a hostile client simply ignores the
+advertisement. socketioxide enforces the cap on the polling transport, which this server
+does not offer, so the transport that is actually in use never sees it.
+
+What does bound an inbound message there is tungstenite's default: **64 MiB per message,
+16 MiB per frame**. So this is a cap in the wrong place rather than no cap at all. The
+exposure is a hostile client forcing a 64 MiB allocation where the configured limit says
+64 KB — a factor of a thousand — and the per-event check below refuses the payload only
+after the frame has been decoded, which means it does not prevent that allocation.
 
 **This cannot be fixed at the reverse proxy.** Neither nginx nor Caddy has a directive
 that bounds a WebSocket frame after the upgrade completes; `client_max_body_size` and its
