@@ -133,11 +133,25 @@ impl PeerConfigFile {
                             "relay.enabled is set but relay.username or relay.credential is empty"
                         );
                     }
-                    ice_servers.push(IceServer {
-                        urls: Urls::One(format!("turn:{host}:{}", self.relay.port)),
-                        username: Some(self.relay.username.clone()),
-                        credential: Some(self.relay.credential.clone()),
-                    });
+                    // Two entries, not one. A `turn:` URL with no transport parameter
+                    // means UDP in WebRTC, and a client on a network that blocks
+                    // outbound UDP — most schools, many offices, some mobile carriers —
+                    // then cannot reach the relay at all. Those are exactly the networks
+                    // that needed a relay in the first place, so advertising only UDP
+                    // leaves the people this exists for with nothing.
+                    //
+                    // UDP first: it is what everyone who can use it should use, and ICE
+                    // tries candidates in the order it is given them.
+                    for transport in ["udp", "tcp"] {
+                        ice_servers.push(IceServer {
+                            urls: Urls::One(format!(
+                                "turn:{host}:{}?transport={transport}",
+                                self.relay.port
+                            )),
+                            username: Some(self.relay.username.clone()),
+                            credential: Some(self.relay.credential.clone()),
+                        });
+                    }
                 }
             }
         }
@@ -201,7 +215,7 @@ mod peer_config_tests {
     /// aucl.greluc.me on 2026-08-24. The Rust server has to produce the same bytes: the
     /// clients that read it are already deployed, and a field renamed or a type changed is
     /// a lobby that silently falls back to STUN only.
-    const LIVE: &str = r#"{"forceRelayOnly":false,"iceServers":[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:aucl.greluc.me:3478","username":"aucl","credential":"secret"}]}"#;
+    const LIVE: &str = r#"{"forceRelayOnly":false,"iceServers":[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:aucl.greluc.me:3478?transport=udp","username":"aucl","credential":"secret"},{"urls":"turn:aucl.greluc.me:3478?transport=tcp","username":"aucl","credential":"secret"}]}"#;
 
     fn from_toml(text: &str) -> PeerConfigFile {
         toml::from_str(text).expect("the example parses")
@@ -247,14 +261,20 @@ mod peer_config_tests {
             "#,
         );
         let resolved = config.resolve(None);
-        assert_eq!(resolved.ice_servers.len(), 2);
+        assert_eq!(resolved.ice_servers.len(), 3);
         assert!(matches!(
             &resolved.ice_servers[0].urls,
             Urls::One(url) if url.starts_with("stun:")
         ));
+        // UDP before TCP: ICE tries them in the order it is given, and everyone who can
+        // use UDP should.
         assert!(matches!(
             &resolved.ice_servers[1].urls,
-            Urls::One(url) if url == "turn:example.com:3478"
+            Urls::One(url) if url == "turn:example.com:3478?transport=udp"
+        ));
+        assert!(matches!(
+            &resolved.ice_servers[2].urls,
+            Urls::One(url) if url == "turn:example.com:3478?transport=tcp"
         ));
     }
 
@@ -290,7 +310,7 @@ mod peer_config_tests {
         );
         let resolved = config.resolve(Some("from-env.example"));
         assert!(resolved.ice_servers.iter().any(
-            |server| matches!(&server.urls, Urls::One(url) if url == "turn:from-env.example:3478")
+            |server| matches!(&server.urls, Urls::One(url) if url == "turn:from-env.example:3478?transport=udp")
         ));
     }
 
