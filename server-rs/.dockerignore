@@ -1,0 +1,26 @@
+# Applies when the build context is `server-rs/`:
+#
+#     docker build -f server-rs/Dockerfile -t anothercrewlink-server:rs server-rs
+#
+# Deny everything, then name what the build actually reads. An allow-list rather than a
+# deny-list for two reasons. `target/` is hundreds of megabytes on any machine that has
+# run `cargo build`, and sending it would dominate the build time and invalidate the
+# dependency cache on every source edit. And `config/peerConfig.toml` — the real one,
+# with the TURN credentials in it — can never be baked into an image by accident,
+# because nothing that is not listed below can enter the context at all. Only the
+# example file is named, and it contains no credentials.
+#
+# The Node server's image is built from the repository root with its own context and is
+# unaffected by this file.
+
+*
+
+!Cargo.toml
+!Cargo.lock
+!src
+!docker
+!config/peerConfig.example.toml
+
+# rust-toolchain.toml is intentionally absent: the Dockerfile pins the toolchain by
+# image tag, and copying the file in would make rustup fetch components the container
+# build does not use. See the comment in the builder stage.

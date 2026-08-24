@@ -1,0 +1,26 @@
+# What every client is told when it connects.
+#
+# Copy to `peerConfig.toml` and edit. The path is overridable with the PEER_CONFIG
+# environment variable. TOML rather than YAML: the maintained YAML crates for Rust
+# depend on an archived machine translation of libyaml, and this file is a handful of
+# fields.
+
+# Refuse direct peer-to-peer connections and route everything through the relay below.
+# Hides players' IP addresses from each other, at the cost of the relay's bandwidth.
+force_relay_only = false
+
+# STUN servers let a client discover its own public address. These are advertised as-is.
+[[ice_servers]]
+urls = "stun:stun.l.google.com:19302"
+
+# The TURN relay is a separate service — see docker-compose.yml — and this only tells
+# clients how to reach it. Anything here is handed to every client that connects, so
+# treat the credentials as public and rotate them if they ever gate something that
+# matters.
+[relay]
+enabled = false
+# Defaults to the HOSTNAME environment variable when omitted.
+# host = "turn.example.com"
+port = 3478
+username = ""
+credential = ""

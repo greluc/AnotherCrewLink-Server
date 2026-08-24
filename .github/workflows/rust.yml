@@ -1,0 +1,112 @@
+name: Rust
+
+concurrency:
+  # Includes the workflow name, for the reason spelled out in codeql.yml: without it
+  # every workflow on the same ref shares one group and they cancel each other.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: ['**']
+    # The Node server in src/ is still the one in production and it has its own
+    # workflow. A push that touches only it must not spend six minutes compiling Rust,
+    # and build.yml carries the mirror image of this filter so the reverse holds too.
+    paths:
+      - 'server-rs/**'
+      - '.github/workflows/rust.yml'
+      # The integration test drives the repository's own socket.io-client, so the Node
+      # dependency set is an input to the Rust test job whether or not any Rust changed.
+      - 'package.json'
+      - 'package-lock.json'
+  pull_request:
+    paths:
+      - 'server-rs/**'
+      - '.github/workflows/rust.yml'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Nothing here is reused between runs, so incremental artefacts are written and then
+  # thrown away.
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+defaults:
+  run:
+    working-directory: server-rs
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The wire test starts the server and drives it with a real socket.io-client from
+      # Node, which is the only check in the crate that can catch a protocol mistake
+      # rather than a logic one. Without these two steps it skips itself and the run is
+      # green while having checked less than it looks like.
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install the reference client
+        # The lockfile at the repository root, installed strictly, the same way build.yml
+        # does it. tests/wire.rs looks for node_modules/socket.io-client there.
+        working-directory: .
+        run: npm ci
+
+      # rust-toolchain.toml pins 1.98.0 and names rustfmt and clippy, so rustup installs
+      # exactly that on the first cargo invocation. Doing it in a step of its own means a
+      # toolchain problem reports itself as a toolchain problem.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      # cargo fmt resolves no dependencies and takes no --locked; every command below
+      # that does resolve them has it.
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Build
+        run: cargo build --locked --all-targets
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+  deny:
+    # Advisories, licences, duplicate versions and crate sources — the policy is in
+    # server-rs/deny.toml. Split out so a supply-chain failure is legible at a glance
+    # and does not hide behind a compile error.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      # Pinned to the version this policy was written and verified against. cargo-deny
+      # reads deny.toml and its schema moves between releases, so an unpinned install
+      # would let an upstream release turn a green gate red with nothing changed here.
+      # --locked builds it from its own committed lockfile.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.20.2
+
+      # Runs advisories, bans, licenses and sources. --locked is cargo-deny's own flag
+      # and it forwards to the cargo metadata call underneath, so the check reads the
+      # committed Cargo.lock instead of resolving a fresh one.
+      - name: Check dependencies
+        run: cargo deny --locked check

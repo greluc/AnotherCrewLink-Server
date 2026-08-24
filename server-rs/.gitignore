@@ -1,0 +1,3 @@
+# Build output. Anchored to this directory so it cannot match a source path called
+# "target" somewhere below.
+/target/

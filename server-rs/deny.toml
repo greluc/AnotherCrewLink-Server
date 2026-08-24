@@ -1,0 +1,144 @@
+# Supply-chain policy for `aucl-server`, enforced by `cargo deny --locked check` in
+# .github/workflows/rust.yml.
+#
+# Four checks run: advisories, bans, licenses, sources. Three of them are hard gates.
+# The fourth — duplicate versions — is deliberately a warning, and the reason is written
+# out under [bans] rather than left to be rediscovered.
+
+[graph]
+# The graph is not narrowed to a target triple. The container is Linux and that is what
+# ships, but the crate is developed and tested on Windows, so a Windows-only advisory has
+# to be visible here too. The cost is a handful of duplicate-version warnings from
+# platform crates that are never linked together; that is the cheaper mistake.
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Advisories — RustSec. Vulnerable and unmaintained are both fatal.
+# ---------------------------------------------------------------------------
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+
+# "all": an unmaintained crate fails the build wherever it sits in the tree, not only
+# when it is a direct dependency. Unmaintained is what kept `rust_socketio` out of this
+# project (RUSTSEC-2025-0012 `backoff`, RUSTSEC-2024-0384 `instant`), and a policy that
+# only looked at direct dependencies would have missed both.
+unmaintained = "all"
+
+# A yank is not a defect report and it can land overnight on a dependency four levels
+# down, with no change on our side. Failing the build for it turns an unrelated push red
+# and teaches people that a red `deny` job means nothing. It is a warning, and the fix is
+# to update the lockfile, not to argue with the gate.
+yanked = "warn"
+
+# Nothing is ignored. An entry here needs a RUSTSEC id, a date, and a sentence saying why
+# this server is not reachable by it.
+ignore = []
+
+# ---------------------------------------------------------------------------
+# Licences — everything must be distributable inside a GPL-3.0-or-later binary.
+# ---------------------------------------------------------------------------
+[licenses]
+# The whole list is one-way compatible with GPL-3.0-or-later: permissive terms can be
+# combined into a GPL work, and GPL-3.0-or-later covers the result. Anything copyleft
+# that is not GPL-3-compatible — AGPL, GPL-2.0-only, SSPL, the source-available
+# "business source" licences — is absent by construction, because the check denies every
+# expression that is not satisfied by this list.
+allow = [
+    "Apache-2.0",
+    # The exception only removes a restriction; the underlying grant is Apache-2.0.
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    # This crate's own licence. A dependency under the same terms is trivially fine.
+    "GPL-3.0-or-later",
+    "MIT",
+    # `unicode-ident` is "(MIT OR Apache-2.0) AND Unicode-3.0", so the Unicode terms are
+    # required in addition to a permissive licence rather than as an alternative to one.
+    "Unicode-3.0",
+    "Unlicense",
+]
+# Nothing sits here that the tree does not actually use: cargo-deny warns about an
+# allowance it never encounters, so a speculative entry is not free.
+
+# No per-crate exceptions. Every crate in the tree satisfies the list above on its own.
+exceptions = []
+
+# ---------------------------------------------------------------------------
+# Bans
+# ---------------------------------------------------------------------------
+[bans]
+# Nothing is banned by name. This server's dependency set is small and deliberate — see
+# docs/rust-port/04-implementation-plan.md §4.2 for why each crate is there — and a
+# `deny` list naming crates that cannot appear is a list nobody maintains. The checks
+# that do work here are the wildcard rule below and the licence and advisory gates above.
+deny = []
+
+# A `*` version requirement means the lockfile can move anywhere on the next `cargo
+# update`, which makes `--locked` in CI the only thing standing between us and an
+# unreviewed dependency. That is a real defect, and it is ours to fix, so it is fatal.
+wildcards = "deny"
+allow-wildcard-paths = false
+
+# Duplicate major versions are a WARNING, on purpose.
+#
+# The rule is unsatisfiable against a real dependency tree: axum and socketioxide are
+# both current releases and they pin different majors of `matchit`; `toml` is mid-move
+# from `winnow` 0.7 to 1.0 inside its own crate family; proc-macro crates are mid-move
+# from `syn` 2 to 3. None of that is under this project's control and none of it is
+# fixable by us. A gate that is red on the first commit gets switched off in the first
+# week, and then the checks that do matter go with it.
+#
+# The list below is the reviewed set: each entry was looked at on the date given, and
+# each is a duplicate that costs compile time and nothing else. A duplicate that is NOT
+# on this list still prints, which is the point — the warnings that remain are the ones
+# nobody has read yet.
+multiple-versions = "warn"
+highlight = "all"
+
+# Reviewed 2026-08-24 against Cargo.lock as committed. Every pair below is two copies of
+# a leaf or near-leaf library, linked independently, with no shared types crossing
+# between them — so there is no "expected `matchit::Router`, found `matchit::Router`"
+# class of problem hiding in any of them.
+skip = [
+    # axum 0.8.9 → matchit 0.8.4; socketioxide 0.18.6 → matchit 0.9.2. Two routers, each
+    # private to its own crate. Resolves when socketioxide and axum agree again.
+    { crate = "matchit@0.8.4", reason = "axum 0.8 pins 0.8 while socketioxide 0.18 pins 0.9 (reviewed 2026-08-24)" },
+    # toml 0.9 → winnow 0.7.15; toml_parser 1.1 → winnow 1.0.4. Both inside the toml
+    # crate family, which is migrating one crate at a time.
+    { crate = "winnow@0.7.15", reason = "toml 0.9 has not finished moving to winnow 1.0 (reviewed 2026-08-24)" },
+    # The proc-macro crates are split across syn 2 and syn 3. Both are build-time only:
+    # neither reaches the shipped binary.
+    { crate = "syn@2.0.119", reason = "async-stream, tracing-attributes and zerocopy-derive are still on syn 2 (reviewed 2026-08-24)" },
+    # tungstenite 0.29 → rand 0.9.5; engineioxide-core 0.2.2 → rand 0.10.2, and each
+    # brings its own rand_core and getrandom. Used for masking keys and session ids.
+    { crate = "rand@0.9.5", reason = "tungstenite 0.29 is on rand 0.9 while engineioxide-core is on 0.10 (reviewed 2026-08-24)" },
+    { crate = "rand_core@0.9.5", reason = "pulled in by rand 0.9.5 above (reviewed 2026-08-24)" },
+    { crate = "getrandom@0.3.4", reason = "pulled in by rand_core 0.9.5 above (reviewed 2026-08-24)" },
+    # sha1 0.10 → cpufeatures 0.2.17; chacha20 0.10 → cpufeatures 0.3.0. A CPU feature
+    # probe, no shared state.
+    { crate = "cpufeatures@0.2.17", reason = "the RustCrypto tree is mid-migration to cpufeatures 0.3 (reviewed 2026-08-24)" },
+    # Reached only through the wasi/UEFI targets, which this server does not build for;
+    # visible because the graph above is not narrowed to a triple.
+    { crate = "r-efi@5.3.0", reason = "unbuilt UEFI target of the getrandom pair above (reviewed 2026-08-24)" },
+]
+
+# No skip-tree entries. Skipping a whole subtree hides duplicates that arrive later
+# underneath it, which is the opposite of what the list above is for.
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources — crates.io and nothing else.
+# ---------------------------------------------------------------------------
+[sources]
+# A git dependency is an unreviewed, unyanked, unauditable moving target, and neither
+# `cargo audit` nor RustSec covers one. There are none, and adding one is a decision that
+# has to be made here, in a diff, rather than in a Cargo.toml line nobody re-reads.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
