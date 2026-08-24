@@ -1,6 +1,6 @@
 # Running the Rust server in production
 
-This directory holds what is needed to run `aucl-server` on a Linux host under systemd,
+This directory holds what is needed to run `acl-server` on a Linux host under systemd,
 behind a reverse proxy. Everything here assumes the two decisions the port was designed
 around:
 
@@ -14,7 +14,7 @@ Contents:
 
 | File | What it is |
 | --- | --- |
-| `aucl-server.service` | The systemd unit, with every hardening directive commented |
+| `acl-server.service` | The systemd unit, with every hardening directive commented |
 | `README.md` | This file |
 
 ---
@@ -24,11 +24,10 @@ Contents:
 Build on a machine with the pinned toolchain (`rust-toolchain.toml` pins 1.98.0):
 
 ```bash
-cd server-rs
 cargo build --release
 ```
 
-The binary is `target/release/aucl-server`. It is a single static-ish executable with no
+The binary is `target/release/acl-server`. It is a single static-ish executable with no
 runtime assets — the status page is a string literal in the binary, not a template — so
 installing it is a copy.
 
@@ -36,42 +35,42 @@ On the target host:
 
 ```bash
 # A non-login system account that owns nothing but this service.
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin aucl
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin acl
 
-sudo install -m 0755 -o root -g root aucl-server /usr/local/bin/aucl-server
+sudo install -m 0755 -o root -g root acl-server /usr/local/bin/acl-server
 
 # Working directory. Read-only to the service: it writes nothing.
-sudo install -d -m 0755 -o root -g root /opt/aucl-server
-sudo install -d -m 0755 -o root -g root /opt/aucl-server/config
+sudo install -d -m 0755 -o root -g root /opt/acl-server
+sudo install -d -m 0755 -o root -g root /opt/acl-server/config
 
 # Peer configuration. World-readable is fine and also honest: everything in this file is
 # handed to every client that connects, TURN credentials included.
 sudo install -m 0644 -o root -g root \
-    config/peerConfig.example.toml /opt/aucl-server/config/peerConfig.toml
+    config/peerConfig.example.toml /opt/acl-server/config/peerConfig.toml
 
 # The environment file. Root-owned and 0640: systemd reads it as root before the
 # sandbox is applied, so the service account never needs access to it.
-sudo install -d -m 0750 -o root -g root /etc/aucl-server
-sudo install -m 0640 -o root -g root /dev/null /etc/aucl-server/aucl-server.env
+sudo install -d -m 0750 -o root -g root /etc/acl-server
+sudo install -m 0640 -o root -g root /dev/null /etc/acl-server/acl-server.env
 ```
 
 Then the unit:
 
 ```bash
 sudo install -m 0644 -o root -g root \
-    deploy/aucl-server.service /etc/systemd/system/aucl-server.service
+    deploy/acl-server.service /etc/systemd/system/acl-server.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now aucl-server
+sudo systemctl enable --now acl-server
 ```
 
 The unit uses `ProtectProc=`, which needs systemd 247 or newer. Older systemd ignores an
 unknown directive with a warning rather than refusing the unit, so the rest still
-applies — but check `systemctl show aucl-server -p ProtectProc` if you care.
+applies — but check `systemctl show acl-server -p ProtectProc` if you care.
 
 Confirm the sandbox is doing what the comments claim:
 
 ```bash
-systemd-analyze security aucl-server
+systemd-analyze security acl-server
 ```
 
 ---
@@ -89,7 +88,7 @@ no others.
 | `NAME` | unset | Display name on the status page and in `/health`. An empty string counts as unset. |
 | `HOSTNAME` | unset | Fallback for `relay.host` when the peer config does not set one. An empty string counts as unset. |
 | `ADDRESS` | `http://127.0.0.1:$PORT` | The address reported by `/` and `/health`. Behind a proxy this is the only way the server can know its public URL, so set it. |
-| `RUST_LOG` | `info,aucl_server=info` | `tracing-subscriber` env-filter directives. |
+| `RUST_LOG` | `info,acl_server=info` | `tracing-subscriber` env-filter directives. |
 
 Three things worth knowing before they surprise someone:
 
@@ -108,7 +107,7 @@ Do not set `BIND=0.0.0.0` unless you have decided, deliberately, to put an untru
 network in front of a server that has no TLS. The loopback default is what keeps the
 crypto stack out of this binary; changing it quietly undoes that.
 
-A working `/etc/aucl-server/aucl-server.env`:
+A working `/etc/acl-server/acl-server.env`:
 
 ```sh
 # Listening socket. Loopback only; nginx is what the internet talks to.
@@ -122,12 +121,12 @@ ADDRESS=https://voice.example.com
 NAME=example.com voice
 
 # Absolute, so the working directory stops mattering.
-PEER_CONFIG=/opt/aucl-server/config/peerConfig.toml
+PEER_CONFIG=/opt/acl-server/config/peerConfig.toml
 
 # Public hostname, used as the TURN relay host when peerConfig.toml omits relay.host.
 HOSTNAME=turn.example.com
 
-RUST_LOG=info,aucl_server=info
+RUST_LOG=info,acl_server=info
 ```
 
 If you deploy the container image instead of the unit, the same variables go in through
@@ -146,10 +145,10 @@ broken peer config presents as "TURN stopped working" rather than as a failed st
 Check the journal after editing it:
 
 ```bash
-journalctl -u aucl-server -n 20 | grep -i 'peer config'
+journalctl -u acl-server -n 20 | grep -i 'peer config'
 ```
 
-The file is read once, at start-up. Editing it needs a `systemctl restart aucl-server`.
+The file is read once, at start-up. Editing it needs a `systemctl restart acl-server`.
 
 ---
 
@@ -170,7 +169,7 @@ map $http_upgrade $connection_upgrade {
 }
 
 # Switching between the Node server and the Rust server is a change to this one line.
-upstream aucl_backend {
+upstream acl_backend {
     server 127.0.0.1:9736;
 }
 ```
@@ -192,7 +191,7 @@ server {
 
     # --- socket.io: an HTTP request that becomes a WebSocket ----------------------
     location /socket.io/ {
-        proxy_pass http://aucl_backend;
+        proxy_pass http://acl_backend;
 
         # Upgrade requires HTTP/1.1 to the upstream. HTTP/2 on the client side is fine
         # and unrelated.
@@ -217,7 +216,7 @@ server {
     # This is the one that fails silently if you skip it. Exact-match location, so it
     # wins over the prefix location below.
     location = /lobbies/stream {
-        proxy_pass http://aucl_backend;
+        proxy_pass http://acl_backend;
         proxy_http_version 1.1;
 
         # SSE is not an upgrade. An empty Connection header stops nginx forwarding the
@@ -243,7 +242,7 @@ server {
 
     # --- everything else: /, /health, /lobbies, /lobbies/{id}/code ----------------
     location / {
-        proxy_pass http://aucl_backend;
+        proxy_pass http://acl_backend;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host              $host;
@@ -284,12 +283,12 @@ change.
 **Prepare.** Give the Rust server its own port and start it alongside the Node server:
 
 ```sh
-# /etc/aucl-server/aucl-server.env
+# /etc/acl-server/acl-server.env
 PORT=9737
 ```
 
 ```bash
-sudo systemctl restart aucl-server
+sudo systemctl restart acl-server
 curl -s http://127.0.0.1:9737/health
 ```
 
@@ -299,7 +298,7 @@ and a `counters` object. Nothing is proxied to it yet.
 **Switch.**
 
 ```bash
-# upstream aucl_backend { server 127.0.0.1:9737; }
+# upstream acl_backend { server 127.0.0.1:9737; }
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -307,7 +306,7 @@ Existing WebSockets stay on the old upstream until they reconnect; new connectio
 the Rust server immediately. Watch both:
 
 ```bash
-journalctl -u aucl-server -f
+journalctl -u acl-server -f
 watch -n5 'curl -s https://voice.example.com/health'
 ```
 
@@ -379,8 +378,8 @@ upstream issue is resolved, the per-event check stays and this section goes.
 
 ```bash
 # The service is up and the sandbox applied.
-systemctl status aucl-server
-systemd-analyze security aucl-server
+systemctl status acl-server
+systemd-analyze security acl-server
 
 # The server answers on loopback.
 curl -s http://127.0.0.1:9736/health

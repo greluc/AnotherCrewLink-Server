@@ -1,6 +1,6 @@
 ; AnotherCrewLink signalling server (Rust).
 ;
-; Install to /etc/systemd/system/aucl-server.service. Every directive below carries a
+; Install to /etc/systemd/system/acl-server.service. Every directive below carries a
 ; comment saying what it prevents, because a unit file nobody understands is a unit file
 ; that gets deleted the first time something breaks.
 ;
@@ -30,15 +30,15 @@ Type=exec
 ; --- identity -------------------------------------------------------------------
 ; An unprivileged, non-login account that owns nothing but this service. The listening
 ; port is 9736, above 1024, so no capability is needed to bind it and none is granted.
-User=aucl
-Group=aucl
+User=acl
+Group=acl
 
 ; --- what it runs ---------------------------------------------------------------
 ; The default PEER_CONFIG path is relative (config/peerConfig.toml), so the working
 ; directory decides where the peer configuration is read from. Set PEER_CONFIG to an
 ; absolute path in the environment file if you would rather not depend on this.
-WorkingDirectory=/opt/aucl-server
-ExecStart=/usr/local/bin/aucl-server
+WorkingDirectory=/opt/acl-server
+ExecStart=/usr/local/bin/acl-server
 
 ; --- configuration --------------------------------------------------------------
 ; The server reads its configuration from the process environment and has no dotfile
@@ -48,7 +48,7 @@ ExecStart=/usr/local/bin/aucl-server
 ; The leading '-' means a missing file is not a startup failure: every variable in it
 ; has a default, and a server that comes up on its defaults is more useful than one that
 ; refuses to start.
-EnvironmentFile=-/etc/aucl-server/aucl-server.env
+EnvironmentFile=-/etc/acl-server/acl-server.env
 
 ; --- privilege ------------------------------------------------------------------
 ; Prevents this process, or anything it execs, from ever gaining privileges — setuid
@@ -158,7 +158,7 @@ KillMode=mixed
 ; the environment file to change the level.
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=aucl-server
+SyslogIdentifier=acl-server
 
 [Install]
 WantedBy=multi-user.target

@@ -1,6 +1,4 @@
-# Applies when the build context is `server-rs/`:
-#
-#     docker build -f server-rs/Dockerfile -t anothercrewlink-server:rs server-rs
+# The build context is the repository root.
 #
 # Deny everything, then name what the build actually reads. An allow-list rather than a
 # deny-list for two reasons. `target/` is hundreds of megabytes on any machine that has

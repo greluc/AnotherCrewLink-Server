@@ -27,11 +27,8 @@ impl Drop for ServerProcess {
 }
 
 fn repo_root() -> PathBuf {
-    // The Node dependencies live in the repository this crate sits inside.
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("server-rs has a parent directory")
-        .to_path_buf()
+    // The crate is the repository, so the Node dependencies sit beside Cargo.toml.
+    Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
 
 fn node_available() -> bool {
@@ -66,7 +63,7 @@ fn the_wire_format_matches_the_reference_client() {
         return;
     }
 
-    let binary = env!("CARGO_BIN_EXE_aucl-server");
+    let binary = env!("CARGO_BIN_EXE_acl-server");
     let child = Command::new(binary)
         .env("PORT", PORT.to_string())
         .env("BIND", "127.0.0.1")

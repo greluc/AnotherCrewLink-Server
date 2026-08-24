@@ -1,15 +1,23 @@
 version: 2
 
 updates:
-  - package-ecosystem: npm
+  - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
-    versioning-strategy: increase
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+
+  # The only npm dependency left is the reference socket.io-client the wire test
+  # drives. It has to track the client library the shipping clients actually use,
+  # or the test stops proving what it claims to.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
 
   # Actions are pinned to commit SHAs, which means nothing here moves unless
   # Dependabot moves it. Without this the pins silently rot.
@@ -21,7 +29,7 @@ updates:
       actions:
         patterns: ['*']
 
-  # Keeps the base image in the Dockerfile on a current Node 24 patch release.
+  # Keeps the builder and runtime base images in the Dockerfile current.
   - package-ecosystem: docker
     directory: /
     schedule:

@@ -1,15 +1,20 @@
 # Runs the signalling server together with a coturn relay.
 #
 # Set TURN_USER, TURN_PASSWORD and PUBLIC_HOSTNAME in a .env file next to this one,
-# then put the same credentials into config/peerConfig.yml under `relay`.
+# then put the same credentials into config/peerConfig.toml under `[relay]`.
 services:
   server:
     build: .
     restart: unless-stopped
     ports:
-      - '9736:9736'
+      # Loopback, not 0.0.0.0. TLS terminates at the reverse proxy in front of this;
+      # publishing publicly would put a plaintext WebSocket endpoint on the internet.
+      - '127.0.0.1:9736:9736'
     environment:
       HOSTNAME: ${PUBLIC_HOSTNAME}
+      # What / and /health report, so an operator can tell which address a
+      # reverse-proxied instance believes it is serving.
+      ADDRESS: https://${PUBLIC_HOSTNAME}
     volumes:
       - ./config:/app/config:ro
 

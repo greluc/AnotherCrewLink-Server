@@ -9,22 +9,8 @@ concurrency:
 on:
   push:
     branches: ['**']
-    # The Node server in src/ is still the one in production and it has its own
-    # workflow. A push that touches only it must not spend six minutes compiling Rust,
-    # and build.yml carries the mirror image of this filter so the reverse holds too.
-    paths:
-      - 'server-rs/**'
-      - '.github/workflows/rust.yml'
-      # The integration test drives the repository's own socket.io-client, so the Node
-      # dependency set is an input to the Rust test job whether or not any Rust changed.
-      - 'package.json'
-      - 'package-lock.json'
   pull_request:
-    paths:
-      - 'server-rs/**'
-      - '.github/workflows/rust.yml'
-      - 'package.json'
-      - 'package-lock.json'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -35,10 +21,6 @@ env:
   # thrown away.
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
-
-defaults:
-  run:
-    working-directory: server-rs
 
 jobs:
   build:
@@ -58,9 +40,8 @@ jobs:
           cache: npm
 
       - name: Install the reference client
-        # The lockfile at the repository root, installed strictly, the same way build.yml
-        # does it. tests/wire.rs looks for node_modules/socket.io-client there.
-        working-directory: .
+        # The only npm dependency in this repository: the socket.io-client that
+        # tests/wire.rs drives against the server. Installed strictly from the lockfile.
         run: npm ci
 
       # rust-toolchain.toml pins 1.98.0 and names rustfmt and clippy, so rustup installs
@@ -88,7 +69,7 @@ jobs:
 
   deny:
     # Advisories, licences, duplicate versions and crate sources — the policy is in
-    # server-rs/deny.toml. Split out so a supply-chain failure is legible at a glance
+    # deny.toml. Split out so a supply-chain failure is legible at a glance
     # and does not hide behind a compile error.
     runs-on: ubuntu-latest
     steps:
@@ -110,3 +91,34 @@ jobs:
       # committed Cargo.lock instead of resolving a fresh one.
       - name: Check dependencies
         run: cargo deny --locked check
+
+  docker:
+    # The image is what actually gets deployed, and it is the one artefact whose build
+    # can break without any Rust changing — a base image tag moving is enough. Built on
+    # every push for the same reason the Node server's image was.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Build image
+        run: docker build -t anothercrewlink-server:ci .
+
+      # A shell-less image cannot be smoke-tested with `docker run ... sh -c`, so this
+      # starts it the way an operator does and asks its own healthcheck binary.
+      - name: Start it and check its health
+        run: |
+          docker run -d --name acl-ci -p 9736:9736 anothercrewlink-server:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9736/health > /dev/null; then
+              echo "healthy after ${i}s"
+              curl -fsS http://127.0.0.1:9736/health
+              docker rm -f acl-ci > /dev/null
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not become healthy"
+          docker logs acl-ci
+          docker rm -f acl-ci > /dev/null
+          exit 1
