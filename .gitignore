@@ -1,5 +1,9 @@
-node_modules/
-dist/
-.env
-config/peerConfig.yml
-.env
+# Build output. Anchored so it cannot match a source path called "target" further down.
+/target/
+
+# The reference socket.io client the wire test drives. It is installed from the
+# lockfile, not committed.
+/node_modules/
+
+# An operator's own peer configuration. Only the example belongs in the repository.
+/config/peerConfig.toml

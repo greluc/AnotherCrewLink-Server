@@ -1,4 +1,4 @@
-# Supply-chain policy for `aucl-server`, enforced by `cargo deny --locked check` in
+# Supply-chain policy for `acl-server`, enforced by `cargo deny --locked check` in
 # .github/workflows/rust.yml.
 #
 # Four checks run: advisories, bans, licenses, sources. Three of them are hard gates.

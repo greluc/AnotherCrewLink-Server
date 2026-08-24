@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,aucl_server=info".into()),
+                .unwrap_or_else(|_| "info,acl_server=info".into()),
         )
         .init();
 

@@ -29,11 +29,14 @@ jobs:
       - name: Check out Git repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # rust-toolchain.toml pins the compiler; CodeQL's Rust extractor builds the
+      # crate itself, so it needs that toolchain present before init runs.
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@4c0873ef8656cb3c50b3f42fb63bc1ade0cfa827 # v4
         with:
-          languages: javascript-typescript
-
-      # No autobuild step: TypeScript is analysed from source.
+          languages: rust
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@4c0873ef8656cb3c50b3f42fb63bc1ade0cfa827 # v4

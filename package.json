@@ -1,46 +1,10 @@
 {
-	"name": "anothercrewlink-server",
-	"version": "1.0.0",
-	"main": "index.js",
+	"name": "acl-server-testclient",
+	"version": "0.0.0",
+	"private": true,
+	"description": "Not the server. The reference Socket.IO client that tests/wire.rs drives against the Rust server, so the wire format is checked against the implementation the shipping clients use rather than against another copy of our own assumptions.",
 	"license": "GPL-3.0-or-later",
-	"dependencies": {
-		"dotenv": "^17.4.2",
-		"express": "^5.2.1",
-		"morgan": "^1.10.1",
-		"pug": "^3.0.3",
-		"socket.io": "^4.8.3",
-		"yaml": "^2.9.0"
-	},
-	"scripts": {
-		"build": "tsc",
-		"start": "npm run build && node dist/index.js",
-		"compile": "tsc",
-		"typecheck": "tsc --noEmit",
-		"lint": "biome check src test",
-		"lint:fix": "biome check --write src test",
-		"audit": "npm audit --audit-level=high",
-		"test": "npm run build && vitest run",
-		"test:watch": "vitest"
-	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.5.10",
-		"@types/express": "^5.0.6",
-		"@types/morgan": "^1.9.10",
-		"@types/node": "^24.13.3",
-		"socket.io-client": "^4.8.3",
-		"typescript": "^7.0.2",
-		"vitest": "^4.1.11"
-	},
-	"engines": {
-		"node": ">=22"
-	},
-	"description": "Voice relay server for AnotherCrewLink",
-	"repository": {
-		"type": "git",
-		"url": "https://github.com/greluc/AnotherCrewLink-server.git"
-	},
-	"author": {
-		"name": "Lucas Greuloch",
-		"email": "lucas.greuloch@pm.me"
+		"socket.io-client": "^4.8.3"
 	}
 }

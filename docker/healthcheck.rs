@@ -5,7 +5,7 @@
 //! HTTP/1.0 to ask the server's own `/health` endpoint whether it is alive, and exits
 //! 0 or 1 the way Docker expects.
 //!
-//! It is deliberately not part of the `aucl-server` crate. `rustc` compiles this one
+//! It is deliberately not part of the `acl-server` crate. `rustc` compiles this one
 //! file in the builder stage with no dependencies at all, so nothing in this file can
 //! reach the server binary, its lockfile or its test suite.
 //!
@@ -36,7 +36,7 @@ fn main() -> ExitCode {
             // Docker keeps the last few lines of a failing probe's output in
             // `docker inspect`, which is the only diagnostic channel an image with no
             // shell has.
-            eprintln!("aucl-healthcheck: {addr}: {err}");
+            eprintln!("acl-healthcheck: {addr}: {err}");
             ExitCode::FAILURE
         }
     }
@@ -75,7 +75,7 @@ fn probe(addr: SocketAddr) -> Result<(), Error> {
     stream.write_all(
         b"GET /health HTTP/1.0\r\n\
           Host: localhost\r\n\
-          User-Agent: aucl-healthcheck\r\n\
+          User-Agent: acl-healthcheck\r\n\
           Connection: close\r\n\
           \r\n",
     )?;

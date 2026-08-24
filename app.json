@@ -1,9 +1,0 @@
-{
-  "name": "AnotherCrewLink Server",
-  "description": "Voice relay server for AnotherCrewLink",
-  "repository": "https://github.com/greluc/AnotherCrewLink-server",
-  "keywords": [
-    "node",
-    "among us"
-  ]
-}
