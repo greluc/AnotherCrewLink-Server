@@ -7,7 +7,18 @@ concurrency:
 on:
   push:
     branches: ['**']
+    # The Rust server in server-rs/ has its own workflow. A push that touches only it
+    # changes nothing this job builds, lints or tests, so skip it rather than rerunning
+    # the Node build and the Docker image for it. rust.yml carries the mirror image of
+    # this filter. Everything else — src/, test/, the Dockerfile, package.json — still
+    # triggers a run, because paths-ignore only skips when every changed path matches.
+    paths-ignore:
+      - 'server-rs/**'
+      - '.github/workflows/rust.yml'
   pull_request:
+    paths-ignore:
+      - 'server-rs/**'
+      - '.github/workflows/rust.yml'
 
 permissions:
   contents: read
