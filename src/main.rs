@@ -48,12 +48,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let settings = Settings::from_env();
-    let peer_config =
-        PeerConfigFile::load(&settings.peer_config_path).resolve(settings.hostname.as_deref());
+    let peer_config = PeerConfigFile::load(&settings.peer_config_path).resolve(
+        settings.hostname.as_deref(),
+        settings.turn_secret.as_deref(),
+        settings.turn_ttl,
+    );
 
     tracing::info!(
-        ice_servers = peer_config.ice_servers.len(),
-        force_relay_only = peer_config.force_relay_only,
+        ice_servers = peer_config.advertised_count(),
+        force_relay_only = peer_config.force_relay_only(),
+        // Worth a line at start-up: it is the difference between every player sharing one
+        // password forever and each getting their own, and it is decided by whether one
+        // environment variable is set.
+        ephemeral_turn_credentials = peer_config.is_ephemeral(),
         "peer configuration loaded"
     );
 

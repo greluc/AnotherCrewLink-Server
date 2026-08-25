@@ -17,17 +17,48 @@
 ##################################################################################
 # Builder
 ##################################################################################
-FROM rust:1.98-alpine AS builder
+FROM rust:1.98.0-alpine3.24@sha256:3ffeca71d0e4fc30f5537f76b7243e87ac99726b6d3d66591dfc5e497078b9fc AS builder
 
-# The image tag is the toolchain pin, so `rust-toolchain.toml` is deliberately *not*
-# copied in: the official images carry a minimal profile, and that file would make
-# rustup download rustfmt and clippy that a container build has no use for. The tag and
-# the file both say 1.98.0; if one of them moves, the other has to move with it.
+# Pinned three ways on purpose: the tag names the toolchain, the tag also names the
+# Alpine underneath it, and the digest names the exact bytes. A tag can be repointed by
+# whoever owns it; a digest cannot. Both digests name a *single-architecture* manifest
+# rather than a multi-arch index, which is what locks this to x86-64 -- a build on an
+# arm64 workstation fails outright instead of quietly producing an image no deployment
+# can run. An explicit `--platform` would do the same and buildkit warns about it, so the
+# digest carries the guarantee alone.
+#
+# 1.98.0 is the current stable, released 2026-08-18 -- looked up rather than assumed. The
+# tag is the toolchain pin, so `rust-toolchain.toml` is deliberately *not* copied in: the
+# official images carry a minimal profile, and that file would make rustup download
+# rustfmt and clippy that a container build has no use for. The tag and the file both say
+# 1.98.0; if one of them moves, the other has to move with it.
 
 WORKDIR /build
 
-ENV CARGO_TERM_COLOR=never \
-    CARGO_NET_RETRY=5
+ENV CARGO_TERM_COLOR=never     CARGO_NET_RETRY=5
+
+# No hardening RUSTFLAGS here, and the absence is deliberate rather than an oversight.
+# The two that get reached for do nothing measurable in this image:
+#
+# * `relro` / `now` protect a GOT that a dynamic loader fills in. This binary is a fully
+#   static musl one -- there is no loader and no lazy binding to harden.
+# * `stack-protector=strong` is a `-Z` flag and needs nightly. The toolchain is pinned
+#   stable, on purpose, and swapping a channel for one flag is a bad trade.
+#
+# `strip` is already `true` in `[profile.release]`, so setting `-C strip=symbols` here
+# would be a second place to change the same thing.
+#
+# The hardening that does bite is further down and in compose: no userland in the runtime
+# image, a non-root high UID, a read-only root filesystem, every capability dropped and
+# `no-new-privileges`. Also *not* set: `panic=abort`. The server runs `CatchPanicLayer`,
+# so a panic has to unwind into a 500 for the one request rather than take the process
+# down and every other player's call with it.
+
+# `cargo auditable` writes the exact dependency graph into the binary, so months later
+# `cargo audit bin acl-server` can still answer "is this artefact affected" against a
+# running container, without the tree that built it. Its own layer, so it is cached
+# independently of this project's dependencies.
+RUN cargo install cargo-auditable --locked --version 0.7.0
 
 # Dependencies first, against a stand-in `main`. This layer is keyed on the manifest
 # and the lockfile alone, so editing anything under src/ reuses the downloaded registry
@@ -38,7 +69,7 @@ ENV CARGO_TERM_COLOR=never \
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src \
     && echo 'fn main() {}' > src/main.rs \
-    && cargo build --release --locked \
+    && cargo auditable build --release --locked \
     && rm -rf src \
         target/release/acl-server target/release/acl-server.d \
         target/release/deps/acl_server* \
@@ -47,7 +78,7 @@ RUN mkdir -p src \
 # Now the real thing. `tests/` is not copied: the wire test drives a Node
 # socket.io-client and belongs to CI, not to a release image.
 COPY src ./src
-RUN cargo build --release --locked
+RUN cargo auditable build --release --locked
 
 # The container health probe, compiled straight by rustc with no dependencies — see
 # docker/healthcheck.rs for why it is not a second bin target in the crate.
@@ -66,7 +97,13 @@ RUN rustc --edition 2024 -O -C panic=abort -C strip=symbols \
 ##################################################################################
 # Runtime
 ##################################################################################
-FROM alpine:3.22
+FROM alpine:3.24.1@sha256:79ff19e9084a00eece421b2523fb93e22d730e2c0e525905de047e848e56d95f
+
+# 3.24.1 is the current stable Alpine, and the digest is the amd64 one. Almost all of
+# this base is deleted three lines further down, so the version matters less here than
+# in most images -- what survives is /etc and the directory skeleton. It is still
+# pinned, because `addgroup` and `adduser` run before the deletion and a repointed tag
+# could change what they are.
 
 # Scratch discipline on an Alpine base: create the account, then delete the userland.
 # What survives is /etc (passwd, group), the empty system directories, and whatever is
@@ -85,6 +122,10 @@ RUN set -eu; \
     addgroup -g 10001 -S acl; \
     adduser -u 10001 -S -D -H -h /nonexistent -s /sbin/nologin -G acl acl; \
     rm -rf /media /mnt /opt /srv /home /root /var/cache/apk /etc/apk /usr /sbin /bin /lib
+
+# Standard OCI metadata, so `docker inspect` and any scanner that reads labels can say
+# what this is and where it came from without a registry lookup.
+LABEL org.opencontainers.image.title="AnotherCrewLink signalling server"       org.opencontainers.image.description="Socket.IO signalling relay for AnotherCrewLink proximity voice chat"       org.opencontainers.image.source="https://github.com/greluc/AnotherCrewLink-Server"       org.opencontainers.image.licenses="GPL-3.0-or-later"       org.opencontainers.image.base.name="docker.io/library/alpine:3.24.1"
 
 COPY --from=builder /build/target/release/acl-server /app/acl-server
 COPY --from=builder /build/acl-healthcheck /app/acl-healthcheck

@@ -21,6 +21,14 @@ dashmap = "6"
 toml = "0.9"
 futures-util = "0.3"
 async-stream = "0.3"
+# Ephemeral TURN credentials (coturn's `use-auth-secret`): base64 of HMAC-SHA1 over the
+# username. Three small, single-purpose RustCrypto/standard crates rather than a TLS stack
+# -- the alternative is a static password handed to every player forever, which is what
+# this replaces. SHA-1 is not a choice here: it is what coturn computes, and this has to
+# produce the same bytes.
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
 
 [dev-dependencies]
 # Tests talk to this server over plain HTTP on the loopback interface, so no TLS.
