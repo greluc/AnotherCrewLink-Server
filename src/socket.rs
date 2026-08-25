@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -28,7 +29,8 @@ use socketioxide::handler::ConnectHandler;
 use socketioxide::socket::Sid;
 
 use crate::state::{
-    AppState, BrowserEvent, Client, GAME_STATE_LOBBY, Membership, PublicLobbyInput,
+    AppState, BrowserEvent, Bucket, Client, GAME_STATE_LOBBY, JOIN_RATE, LOBBY_RATE, Limits,
+    Membership, PublicLobbyInput, SIGNAL_RATE, VAD_RATE,
 };
 
 /// The room used for the lobby browser. This one is a socketioxide room on purpose: it
@@ -125,7 +127,20 @@ async fn remove_public_lobby(io: &SocketIo, state: &Arc<AppState>, code: &str) {
 
 #[derive(Debug, Deserialize)]
 pub struct SignalIn {
-    pub data: serde_json::Value,
+    /// The raw bytes, deliberately not a `serde_json::Value`.
+    ///
+    /// This is the one field on this server that carries an arbitrary attacker-chosen
+    /// document, and the WebSocket transport does not bound it -- `max_payload` in
+    /// `main.rs` is applied by engineioxide to the polling transport only, and the
+    /// WebSocket side leaves tungstenite's 64 MiB default in place. There is no knob for
+    /// it in socketioxide 0.18.6; `transport/ws.rs` builds a `WebSocketConfig` and sets
+    /// only `read_buffer_size`.
+    ///
+    /// Parsing that into a `Value` built a node tree several times the size of the bytes
+    /// that arrived, before anything had looked at how big it was. A `RawValue` keeps the
+    /// original slice, so the size check below happens on what was actually received and
+    /// nothing is walked, allocated per node, or re-serialised on the way out.
+    pub data: Box<RawValue>,
     pub to: String,
 }
 
@@ -222,6 +237,39 @@ fn on_connect(socket: &SocketRef, state: &Arc<AppState>) {
     }
 }
 
+/// Spends a token from one of the sender's buckets.
+///
+/// Over the limit the caller returns without doing the work, and the drop is counted on
+/// `/health` as `refusedRateLimited`. Deliberately not a disconnect: these limits sit far
+/// above what the shipped client does, but a client that stutters past a burst -- a laggy
+/// machine, a resumed laptop, a garbage-collection pause -- must not lose its call over
+/// it. What has to be stopped is a sender that never stops, and dropping does that.
+///
+/// A socket with no membership row is let through: it has not been admitted yet, and
+/// every handler checks that for itself and refuses more precisely than this could.
+fn within_limit(
+    state: &Arc<AppState>,
+    sid: Sid,
+    pick: impl FnOnce(&mut Limits) -> &mut Bucket,
+    rate: (f64, f64),
+) -> bool {
+    let now = Instant::now();
+    // The guard is released by the end of this statement, before any caller goes on to
+    // touch `lobbies`. Holding both maps at once, in either order, is how this would
+    // deadlock.
+    let allowed = match state.members.get_mut(&sid) {
+        Some(mut member) => pick(&mut member.limits).allow(rate.0, rate.1, now),
+        None => true,
+    };
+    if !allowed {
+        state
+            .counters
+            .refused_rate_limited
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    allowed
+}
+
 fn on_join(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
     let io = io.clone();
     let state = state.clone();
@@ -240,6 +288,9 @@ fn on_join(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
             };
 
             let sid = socket.id;
+            if !within_limit(&state, sid, |l| &mut l.join, JOIN_RATE) {
+                return;
+            }
             let client = Client {
                 player_id,
                 client_id,
@@ -251,7 +302,7 @@ fn on_join(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
                 .get(&sid)
                 .and_then(|member| member.code.clone());
             if let Some(previous) = previous
-                && previous != code
+                && *previous != *code
             {
                 leave_room(&io, &state, sid, &previous).await;
             }
@@ -282,7 +333,7 @@ fn on_join(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
             };
 
             if let Some(mut membership) = state.members.get_mut(&sid) {
-                membership.code = Some(code.clone());
+                membership.code = Some(Arc::from(code.as_str()));
                 membership.client = Some(client);
             }
 
@@ -318,7 +369,7 @@ fn on_set_host(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
                 .members
                 .get(&sid)
                 .and_then(|member| member.code.clone())
-                .is_some_and(|current| current == code);
+                .is_some_and(|current| *current == *code);
             if !in_this_lobby {
                 tracing::warn!(sid = %sid, code, "setHost for a lobby this socket is not in");
                 return;
@@ -398,7 +449,7 @@ fn on_id(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
 
             let Some(code) = code else { return };
 
-            if let Some(mut lobby) = state.lobbies.get_mut(&code) {
+            if let Some(mut lobby) = state.lobbies.get_mut(code.as_ref()) {
                 lobby.members.entry(sid).or_default().client = Some(client);
             }
 
@@ -423,7 +474,7 @@ fn on_leave(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
             .get_mut(&sid)
             .and_then(|mut member| member.code.take());
         if let Some(code) = code {
-            leave_room(&io, &state, sid, &code).await;
+            leave_room(&io, &state, sid, code.as_ref()).await;
         }
     });
 }
@@ -436,6 +487,9 @@ fn on_vad(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
         async move |socket: SocketRef, TryData(activity): TryData<bool>| {
             let Ok(activity) = activity else { return };
             let sid = socket.id;
+            if !within_limit(&state, sid, |l| &mut l.vad, VAD_RATE) {
+                return;
+            }
             let Some((code, client)) = state
                 .members
                 .get(&sid)
@@ -503,11 +557,14 @@ fn on_lobby(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
                 return;
             };
             let sid = socket.id;
+            if !within_limit(&state, sid, |l| &mut l.lobby, LOBBY_RATE) {
+                return;
+            }
             let in_this_lobby = state
                 .members
                 .get(&sid)
                 .and_then(|member| member.code.clone())
-                .is_some_and(|current| current == code);
+                .is_some_and(|current| *current == *code);
             if !in_this_lobby {
                 tracing::warn!(sid = %sid, code, "lobby command for a lobby this socket is not in");
                 return;
@@ -561,7 +618,7 @@ fn on_remove_lobby(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
                 .members
                 .get(&sid)
                 .and_then(|member| member.code.clone())
-                .is_some_and(|current| current == code);
+                .is_some_and(|current| *current == *code);
             if !in_this_lobby {
                 tracing::warn!(sid = %sid, code, "remove_lobby for a lobby this socket is not in");
                 return;
@@ -578,6 +635,9 @@ fn on_signal(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
         "signal",
         async move |socket: SocketRef, TryData(signal): TryData<SignalIn>| {
             let sid = socket.id;
+            if !within_limit(&state, sid, |l| &mut l.signal, SIGNAL_RATE) {
+                return;
+            }
             let Ok(signal) = signal else {
                 state
                     .counters
@@ -606,6 +666,18 @@ fn on_signal(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
                 return;
             }
 
+            // Checked on the bytes that arrived, before anything is built from them. The
+            // envelope above is cheap and runs first; this is the second thing that can
+            // refuse, and it refuses without ever having allocated a copy.
+            if signal.data.get().len() > MAX_SIGNAL_BYTES {
+                state
+                    .counters
+                    .refused_oversize
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(sid = %sid, bytes = signal.data.get().len(), "refused an oversized signal");
+                return;
+            }
+
             let payload = serde_json::json!({
                 "data": signal.data,
                 "from": sid.to_string(),
@@ -613,14 +685,6 @@ fn on_signal(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
             let Some(rendered) = render(&payload) else {
                 return;
             };
-            if rendered.get().len() > MAX_SIGNAL_BYTES {
-                state
-                    .counters
-                    .refused_oversize
-                    .fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(sid = %sid, bytes = rendered.get().len(), "refused an oversized signal");
-                return;
-            }
 
             deliver(&io, &state, target, "signal", &*rendered);
         },
@@ -660,7 +724,7 @@ fn on_disconnect(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
         if let Some((_, membership)) = state.members.remove(&sid)
             && let Some(code) = membership.code
         {
-            leave_room(&io, &state, sid, &code).await;
+            leave_room(&io, &state, sid, code.as_ref()).await;
         }
         state.connections.fetch_sub(1, Ordering::Relaxed);
         tracing::info!(
