@@ -108,17 +108,37 @@ constraint here, not CPU.
 
 ## Rootless Docker and Podman
 
-`network_mode: host` is what keeps this simple, and it means different things in the two
-rootless runtimes:
+> **Corrected 2026-08-25.** An earlier version of this section said the TURN port might
+> need `CAP_NET_BIND_SERVICE` or a lowered `net.ipv4.ip_unprivileged_port_start`. That was
+> wrong. Privileged ports are 0-1023; TURN's 3478 and TURNS' 5349 are both above that and
+> need no privilege at all. The `cap_add` the compose file used to carry has gone with it.
 
-- **Podman rootless** shares the real host network namespace. Ports below 1024 still need
-  `net.ipv4.ip_unprivileged_port_start` lowered on the host, or a `TURN_PORT` at 1024 or
-  above. The port is advertised by our own server rather than discovered by clients, so a
-  high port costs nothing: set `TURN_PORT=34780`, forward that, and delete the `cap_add`
-  from the compose file.
-- **Rootless Docker** puts "host" networking inside RootlessKit's namespace, not the real
-  host's. Inbound traffic still arrives through RootlessKit's port forwarder, so the
-  bridged caveats below apply.
+`network_mode: host` is what keeps this simple, and the two rootless runtimes differ so
+much here that the choice of runtime decides how much work this is.
+
+**Podman rootless is the easy case, and it is the recommended one.** `--network=host`
+gives the container the *real* host network namespace. coturn binds the host's interfaces
+directly, so there is nothing to publish, no relay range to forward through a userspace
+proxy, and no address rewriting: coturn sees each client's actual source address, which is
+what its allocations and its rate accounting are built on. Nothing needs elevating,
+because nothing here binds a privileged port.
+
+Podman's quadlets also fit a systemd-managed host better than a compose file does: the
+container becomes an ordinary unit, with the same restart and ordering semantics as
+everything else on the box.
+
+**Rootless Docker is the hard case, and `network_mode: host` does not work there.** It
+does not give the container the host's namespace; it gives it RootlessKit's, which nothing
+outside can reach, and `-p` cannot be combined with host networking to compensate. The
+setup has to go bridged, which brings two costs:
+
+- The relay range has to be published one-to-one, and every published port is work for
+  RootlessKit's forwarder.
+- **The default port driver rewrites the source address.** coturn then sees every client
+  arriving from the same address, which flattens its per-client accounting and is
+  untested territory for a relay. Docker documents setting the RootlessKit port driver to
+  `slirp4netns` to preserve source addresses; that fixes the correctness problem and
+  costs throughput.
 
 Bridged, publish the range with matching host and container numbers:
 
