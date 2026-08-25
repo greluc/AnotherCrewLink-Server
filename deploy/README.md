@@ -1,7 +1,8 @@
 # Running the Rust server in production
 
-This directory holds what is needed to run `acl-server` on a Linux host under systemd,
-behind a reverse proxy. Everything here assumes the two decisions the port was designed
+This directory holds what is needed to run `acl-server` and its TURN relay on a Linux host
+under **rootless Podman**, behind a reverse proxy. The units are quadlets, so both
+containers are ordinary systemd services. Everything here assumes the two decisions the port was designed
 around:
 
 - **TLS terminates at the reverse proxy.** The server binds to the loopback interface by
@@ -14,64 +15,24 @@ Contents:
 
 | File | What it is |
 | --- | --- |
-| `acl-server.service` | The systemd unit, with every hardening directive commented |
-| `README.md` | This file |
+| `quadlet/` | The two systemd units, and how to install them |
+| `coturn-dynamic-ip.md` | The relay on a residential line, and what the router and the line must provide |
+| `README.md` | This file: the environment, the peer configuration, and nginx |
 
 ---
 
-## 1. Build and install
+## 1. Installing
 
-Build on a machine with the pinned toolchain (`rust-toolchain.toml` pins 1.98.0):
+See [quadlet/README.md](quadlet/README.md). In short: build the images somewhere with
+memory to spare, load them on the server, drop two `.container` files into
+`~/.config/containers/systemd/`, and `systemctl --user daemon-reload`.
 
-```bash
-cargo build --release
-```
+**Do not build on the server.** A release build of this workspace with LTO wants more
+memory than a small VM has, and the build tool is what falls over.
 
-The binary is `target/release/acl-server`. It is a single static-ish executable with no
-runtime assets — the status page is a string literal in the binary, not a template — so
-installing it is a copy.
-
-On the target host:
-
-```bash
-# A non-login system account that owns nothing but this service.
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin acl
-
-sudo install -m 0755 -o root -g root acl-server /usr/local/bin/acl-server
-
-# Working directory. Read-only to the service: it writes nothing.
-sudo install -d -m 0755 -o root -g root /opt/acl-server
-sudo install -d -m 0755 -o root -g root /opt/acl-server/config
-
-# Peer configuration. World-readable is fine and also honest: everything in this file is
-# handed to every client that connects, TURN credentials included.
-sudo install -m 0644 -o root -g root \
-    config/peerConfig.example.toml /opt/acl-server/config/peerConfig.toml
-
-# The environment file. Root-owned and 0640: systemd reads it as root before the
-# sandbox is applied, so the service account never needs access to it.
-sudo install -d -m 0750 -o root -g root /etc/acl-server
-sudo install -m 0640 -o root -g root /dev/null /etc/acl-server/acl-server.env
-```
-
-Then the unit:
-
-```bash
-sudo install -m 0644 -o root -g root \
-    deploy/acl-server.service /etc/systemd/system/acl-server.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now acl-server
-```
-
-The unit uses `ProtectProc=`, which needs systemd 247 or newer. Older systemd ignores an
-unknown directive with a warning rather than refusing the unit, so the rest still
-applies — but check `systemctl show acl-server -p ProtectProc` if you care.
-
-Confirm the sandbox is doing what the comments claim:
-
-```bash
-systemd-analyze security acl-server
-```
+There is no compose file and no Docker. `deploy/quadlet/README.md` explains why that is a
+constraint rather than a preference: rootless Docker cannot give the relay the host network
+namespace it needs.
 
 ---
 
@@ -89,6 +50,13 @@ no others.
 | `HOSTNAME` | unset | Fallback for `relay.host` when the peer config does not set one. An empty string counts as unset. |
 | `ADDRESS` | `http://127.0.0.1:$PORT` | The address reported by `/` and `/health`. Behind a proxy this is the only way the server can know its public URL, so set it. |
 | `RUST_LOG` | `info,acl_server=info` | `tracing-subscriber` env-filter directives. |
+| `TURN_SECRET` | unset | The secret coturn was started with as `--static-auth-secret`. Setting it switches the relay from a shared password in `peerConfig.toml` to a credential minted per client. An empty string counts as unset. |
+| `TURN_PORT` | `3478` | The port coturn listens on, and therefore the port clients are told about — unless `peerConfig.toml` names one explicitly, which wins. |
+| `TURN_TTL_SECONDS` | `86400` | How long an issued credential is valid. It is handed out once, when a client connects, so it has to outlive a session rather than a request. |
+
+The relay reads more of these — `TURN_MIN_PORT`, `TURN_MAX_PORT`, `TURN_REALM`,
+`TURN_EXTERNAL_IP`, `TURN_IP_CHECK_INTERVAL` — from the same file. They are documented in
+`.env.example` and in [coturn-dynamic-ip.md](coturn-dynamic-ip.md).
 
 Three things worth knowing before they surprise someone:
 
@@ -107,7 +75,7 @@ Do not set `BIND=0.0.0.0` unless you have decided, deliberately, to put an untru
 network in front of a server that has no TLS. The loopback default is what keeps the
 crypto stack out of this binary; changing it quietly undoes that.
 
-A working `/etc/acl-server/acl-server.env`:
+A working `~/.config/acl/acl.env`:
 
 ```sh
 # Listening socket. Loopback only; nginx is what the internet talks to.
@@ -120,8 +88,8 @@ ADDRESS=https://voice.example.com
 # Shown on the status page.
 NAME=example.com voice
 
-# Absolute, so the working directory stops mattering.
-PEER_CONFIG=/opt/acl-server/config/peerConfig.toml
+# The path inside the container; the quadlet mounts ~/.config/acl/config there.
+PEER_CONFIG=/app/config/peerConfig.toml
 
 # Public hostname, used as the TURN relay host when peerConfig.toml omits relay.host.
 HOSTNAME=turn.example.com
@@ -129,8 +97,8 @@ HOSTNAME=turn.example.com
 RUST_LOG=info,acl_server=info
 ```
 
-If you deploy the container image instead of the unit, the same variables go in through
-`docker run --env-file`; nothing about the configuration surface changes.
+Both containers read the same file through the quadlets' `EnvironmentFile=`, which is why
+there is one of it and not two.
 
 ### Peer configuration
 
@@ -145,10 +113,10 @@ broken peer config presents as "TURN stopped working" rather than as a failed st
 Check the journal after editing it:
 
 ```bash
-journalctl -u acl-server -n 20 | grep -i 'peer config'
+journalctl --user -u acl-server -n 20 | grep -i 'peer config'
 ```
 
-The file is read once, at start-up. Editing it needs a `systemctl restart acl-server`.
+The file is read once, at start-up. Editing it needs a `systemctl --user restart acl-server`.
 
 ---
 

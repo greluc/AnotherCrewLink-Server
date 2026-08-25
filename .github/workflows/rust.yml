@@ -92,33 +92,69 @@ jobs:
       - name: Check dependencies
         run: cargo deny --locked check
 
-  docker:
-    # The image is what actually gets deployed, and it is the one artefact whose build
-    # can break without any Rust changing — a base image tag moving is enough. Built on
-    # every push for the same reason the Node server's image was.
+  images:
+    # The images are what gets deployed, and they are the one artefact whose build can
+    # break without any Rust changing -- a base image tag moving is enough.
+    #
+    # Built and run with **podman**, because that is the deployment runtime. Building with
+    # one engine and deploying with another would leave the interesting failures for the
+    # server to find.
     runs-on: ubuntu-latest
     steps:
       - name: Check out Git repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Build image
-        run: docker build -t anothercrewlink-server:ci .
-
-      # A shell-less image cannot be smoke-tested with `docker run ... sh -c`, so this
-      # starts it the way an operator does and asks its own healthcheck binary.
-      - name: Start it and check its health
+      - name: Build both images
         run: |
-          docker run -d --name acl-ci -p 9736:9736 anothercrewlink-server:ci
+          podman build -t anothercrewlink-server:ci -f Containerfile .
+          podman build -t anothercrewlink-coturn:ci -f containers/coturn/Containerfile containers/coturn
+
+      # A shell-less image cannot be smoke-tested with `run ... sh -c`, so this starts it
+      # the way a quadlet does and asks its own healthcheck binary.
+      - name: The server starts under the quadlet's hardening
+        run: |
+          podman run -d --name acl-ci             --read-only --cap-drop=ALL --security-opt=no-new-privileges:true             -p 127.0.0.1:9736:9736 anothercrewlink-server:ci
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:9736/health > /dev/null; then
               echo "healthy after ${i}s"
               curl -fsS http://127.0.0.1:9736/health
-              docker rm -f acl-ci > /dev/null
+              podman rm -f acl-ci > /dev/null
               exit 0
             fi
             sleep 1
           done
           echo "server did not become healthy"
-          docker logs acl-ci
-          docker rm -f acl-ci > /dev/null
+          podman logs acl-ci
           exit 1
+
+      # coturn only announces a bad flag by refusing to start, and its hardening only
+      # announces itself by the container failing to exec. Both have happened here, and
+      # neither shows up in a diff.
+      - name: coturn starts under the quadlet's hardening
+        run: |
+          podman run -d --name turn-ci             --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1m             --cap-drop=ALL --cap-add=NET_BIND_SERVICE --security-opt=no-new-privileges:true             -e TURN_SECRET=ci-smoke-test -e TURN_EXTERNAL_IP=203.0.113.10             anothercrewlink-coturn:ci
+          sleep 5
+          podman logs turn-ci
+          podman logs turn-ci 2>&1 | grep -q "Black listing"             || { echo "coturn did not reach its peer deny list"; exit 1; }
+          podman rm -f turn-ci > /dev/null
+
+  deployment:
+    # The pair, driven by five real socket.io clients, ending with coturn being asked to
+    # accept a credential this server derived. That last step is the only way to find out
+    # whether the two halves of the shared-secret scheme agree, because the answer lives
+    # inside coturn.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.x
+
+      - name: Install the socket.io client
+        run: npm ci
+
+      - name: Run the deployment verification
+        run: tests/deployment.sh

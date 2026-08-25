@@ -3,7 +3,7 @@
 //! The final image has no shell and no curl, so `HEALTHCHECK CMD curl …` cannot work
 //! there. This is the replacement: a single static binary that speaks just enough
 //! HTTP/1.0 to ask the server's own `/health` endpoint whether it is alive, and exits
-//! 0 or 1 the way Docker expects.
+//! 0 or 1 the way a container healthcheck is expected to.
 //!
 //! It is deliberately not part of the `acl-server` crate. `rustc` compiles this one
 //! file in the builder stage with no dependencies at all, so nothing in this file can
@@ -20,7 +20,7 @@ use std::time::Duration;
 
 /// Everything — connect, write, read — gets this long. Docker's own `--timeout` is the
 /// outer bound; this one exists so a half-open socket fails as a probe rather than
-/// hanging until Docker kills it, which reads as a different fault in the logs.
+/// hanging until the runtime kills it, which reads as a different fault in the logs.
 const TIMEOUT: Duration = Duration::from_secs(2);
 
 /// `/health` is a small JSON object. Anything larger than this is not the endpoint we
@@ -33,8 +33,8 @@ fn main() -> ExitCode {
     match probe(addr) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            // Docker keeps the last few lines of a failing probe's output in
-            // `docker inspect`, which is the only diagnostic channel an image with no
+            // The runtime keeps the last few lines of a failing probe's output in
+            // `podman inspect`, which is the only diagnostic channel an image with no
             // shell has.
             eprintln!("acl-healthcheck: {addr}: {err}");
             ExitCode::FAILURE

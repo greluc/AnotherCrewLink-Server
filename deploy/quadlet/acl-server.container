@@ -1,0 +1,49 @@
+# The signalling server, as a systemd unit.
+#
+# Install into ~/.config/containers/systemd/ and see deploy/quadlet/README.md.
+#
+# Rootless. Nothing in here needs root, and the reverse proxy in front of it is what holds
+# the privileged ports.
+
+[Unit]
+Description=AnotherCrewLink signalling server
+Documentation=https://github.com/greluc/AnotherCrewLink-Server
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=localhost/anothercrewlink-server:latest
+ContainerName=acl-server
+AutoUpdate=local
+
+# Loopback, not 0.0.0.0. TLS terminates at the reverse proxy in front of this, so
+# publishing anywhere else would put a plaintext WebSocket endpoint on the internet.
+PublishPort=127.0.0.1:9736:9736
+
+# One file, shared with the relay. See .env.example.
+EnvironmentFile=%h/.config/acl/acl.env
+
+# The peer configuration, read once at start-up and never written.
+Volume=%h/.config/acl/config:/app/config:ro,Z
+
+# Hardening. The image already has no shell, no busybox and no libc, so there is nothing
+# in it to escalate *to*; these stop the container being a useful place to land even so.
+# Verified against the built image: it binds one TCP socket, reads one file, writes
+# nothing, and answers /health under exactly this set.
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=ALL
+PidsLimit=512
+
+# The image carries its own HEALTHCHECK -- a static binary that speaks HTTP/1.0 to the
+# server's own /health, because there is no curl and no shell to run one with.
+Notify=healthy
+
+[Service]
+Restart=always
+# The healthcheck's start period is 10s; give the first one room to pass before systemd
+# decides the unit failed.
+TimeoutStartSec=90
+
+[Install]
+WantedBy=default.target

@@ -13,7 +13,7 @@ force_relay_only = false
 [[ice_servers]]
 urls = "stun:stun.l.google.com:19302"
 
-# The TURN relay is a separate service — see docker-compose.yml — and this only tells
+# The TURN relay is a separate container — see deploy/quadlet/ — and this only tells
 # clients how to reach it. It is advertised twice, over UDP and over TCP: a `turn:` URL
 # with no transport parameter means UDP, and a client on a network that blocks outbound
 # UDP cannot reach the relay at all — which is exactly the sort of network that needed a

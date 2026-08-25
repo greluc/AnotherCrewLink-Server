@@ -609,11 +609,8 @@ mod replay_tests {
 
     fn state() -> AppState {
         AppState::new(
-            crate::config::PeerConfigFile::default().resolve(
-                None,
-                None,
-                crate::config::DEFAULT_TURN_TTL,
-            ),
+            crate::config::PeerConfigFile::default()
+                .resolve(crate::config::RelayEnvironment::default()),
             None,
             "http://x".to_owned(),
         )

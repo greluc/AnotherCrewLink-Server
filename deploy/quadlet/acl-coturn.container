@@ -1,0 +1,64 @@
+# The TURN relay, as a systemd unit.
+#
+# Install into ~/.config/containers/systemd/ and see deploy/quadlet/README.md, and
+# deploy/coturn-dynamic-ip.md for what the router and the line have to provide.
+
+[Unit]
+Description=coturn TURN relay for AnotherCrewLink
+Documentation=https://github.com/greluc/AnotherCrewLink-Server
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=localhost/anothercrewlink-coturn:latest
+ContainerName=acl-coturn
+AutoUpdate=local
+
+# **Host networking, and this is the reason the deployment is Podman.**
+#
+# A TURN relay hands each allocation one UDP port and then tells the client to send to it.
+# Rootless Podman's `--network=host` is the *real* host namespace, so coturn binds the
+# host's interfaces directly: nothing to publish, no relay range through a userspace
+# proxy, and every client's real source address preserved -- which is what coturn's
+# allocations and its rate accounting rest on.
+#
+# Rootless Docker cannot do this. There, "host" is RootlessKit's namespace, which nothing
+# outside can reach, and the alternative is publishing the whole relay range one-to-one
+# through a forwarder that rewrites the source address by default.
+Network=host
+
+# Every flag coturn is started with is built inside the entrypoint from these variables,
+# so there is no argument list here to drift out of step with anything.
+EnvironmentFile=%h/.config/acl/acl.env
+
+ReadOnly=true
+Tmpfs=/tmp:rw,noexec,nosuid,nodev,size=1m
+NoNewPrivileges=true
+
+# `DropCapability=ALL` alone makes the container fail to start, and the reason is not the
+# port: 3478 is not privileged, and neither is 5349. The upstream `turnserver` binary
+# carries a `security.capability` attribute, and a file with capabilities cannot be
+# exec'd at all once the bounding set is empty -- the failure is `Operation not
+# permitted` before coturn prints a line.
+#
+# Measured rather than reasoned about, on the built image:
+#
+#     DropCapability=ALL                          -> fails to exec
+#     DropCapability=ALL + NET_BIND_SERVICE       -> starts
+#     NoNewPrivileges alone                       -> starts
+#
+# So the capability goes back, for the real reason. An earlier change removed it having
+# correctly established that the port needs no privilege, and that would have shipped a
+# relay that never started.
+DropCapability=ALL
+AddCapability=NET_BIND_SERVICE
+
+PidsLimit=256
+
+[Service]
+Restart=always
+# Discovery talks to up to three public endpoints before coturn is started.
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

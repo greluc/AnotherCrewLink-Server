@@ -19,7 +19,7 @@ people have problems", not as an outage.
 
 ## What the container does
 
-`docker/coturn/entrypoint.sh` discovers the address, starts coturn with it, and rechecks
+`containers/coturn/entrypoint.sh` discovers the address, starts coturn with it, and rechecks
 every `TURN_IP_CHECK_INTERVAL` seconds (300 by default). It restarts coturn **only when
 the address actually changed**.
 
@@ -58,18 +58,18 @@ The same check rejects `10/8`, `172.16/12`, `192.168/16`, `127/8`, `169.254/16`,
 | What | Protocol | Why |
 | --- | --- | --- |
 | `TURN_PORT` (3478 by default) | UDP **and** TCP | Clients that cannot use UDP fall back to TCP, and those are exactly the clients that needed a relay |
-| `TURN_MIN_PORT`–`TURN_MAX_PORT` (49160–49360 by default) | UDP | One port per active allocation |
+| `TURN_MIN_PORT`–`TURN_MAX_PORT` (49160–49800 by default) | UDP | One port per active allocation |
 
 **One to one, with no port translation.** coturn tells the client which port it allocated.
 If the router hands out a different external port, the client sends media to a port
 nothing is listening on. This is the most common way a TURN deployment behind a home
 router is broken, and it looks exactly like a client bug.
 
-The range is deliberately narrow. coturn defaults to 49152–65535 — sixteen thousand ports,
-which is miserable to enter into a router and, under rootless Docker or Podman, is
-per-port work in rootlesskit or pasta that simply does not come up. Two hundred ports is
-two hundred simultaneous relayed allocations, which a proximity-chat server for a handful
-of lobbies will not reach.
+The range is far narrower than coturn's own default of 49152–65535 — sixteen thousand
+ports, which is miserable to enter into a router and, under rootless Docker, is per-port
+work in rootlesskit that simply does not come up. 641 ports is 641 simultaneous relayed
+allocations, which a proximity-chat server for a handful of lobbies will not reach, and it
+is still one rule on a router rather than a thousand.
 
 ### 3. DynDNS has to track, with a short TTL
 
@@ -146,7 +146,7 @@ Bridged, publish the range with matching host and container numbers:
 ports:
   - '${TURN_PORT:-3478}:${TURN_PORT:-3478}/udp'
   - '${TURN_PORT:-3478}:${TURN_PORT:-3478}/tcp'
-  - '${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49360}:${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49360}/udp'
+  - '${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49800}:${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49800}/udp'
 ```
 
 and keep the range small. Podman 5 defaults to pasta, which handles this far better than
