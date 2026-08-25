@@ -102,11 +102,12 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=1m
-    # coturn needs to bind its listening port and nothing else. Drop everything, then add
-    # back the one capability a port below 1024 requires -- and if TURN_PORT is 1024 or
-    # above, delete these two lines as well.
+    # coturn needs to bind its listening port and nothing else, and it needs no capability
+    # to do it. This carried a `cap_add: [NET_BIND_SERVICE]` and a comment about ports
+    # below 1024 until 2026-08-25, which was simply wrong: privileged ports are 0-1023 and
+    # TURN's 3478 is not one of them. Neither is TURNS' 5349. There was never anything to
+    # grant, so nothing is granted.
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
     security_opt:
       - no-new-privileges:true
     pids_limit: 256
