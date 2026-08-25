@@ -11,10 +11,9 @@ use std::time::Duration;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Html, IntoResponse};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use futures_util::stream::Stream;
 use serde::Serialize;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -104,8 +103,21 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     })
 }
 
+/// The whole list, in one response.
+///
+/// Cacheable for a few seconds, and that is the point: this needs no credential, clones
+/// every lobby to answer, and the live path for a browser is `/lobbies/stream` rather than
+/// polling this. Five seconds lets the reverse proxy absorb a flood of identical requests
+/// without anyone noticing a stale list -- a lobby that appeared a moment ago shows up on
+/// the stream immediately, and in this list a moment later.
+///
+/// Safe to cache because a `PublicLobby` carries no join code. The code is behind
+/// `/lobbies/{id}/code`, which sets `no-store` for exactly that reason.
 async fn lobbies(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(snapshot(&state))
+    (
+        [(header::CACHE_CONTROL, "public, max-age=5")],
+        Json(snapshot(&state)),
+    )
 }
 
 fn snapshot(state: &AppState) -> Vec<PublicLobby> {
@@ -158,10 +170,21 @@ async fn lobby_code(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> 
 /// holds, is sent the whole list once and then follows along. That is the honest
 /// behaviour for a feed of current state rather than a log: replaying an arbitrary
 /// distance back would mean keeping every event forever.
-async fn lobby_stream(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn lobby_stream(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    // This endpoint needs no credential and each subscriber costs a task and a broadcast
+    // receiver for as long as it stays connected, so there has to be a ceiling. The slot
+    // is a guard: it is released when the stream is dropped, which covers the client
+    // going away, the reverse proxy timing out, and a panic inside the stream body alike.
+    // A decrement written at the end of this function would be missed by all three.
+    let Some(slot) = state.take_stream_slot() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, "10")],
+            "too many lobby stream subscribers",
+        )
+            .into_response();
+    };
+
     let last_seen = headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
@@ -178,8 +201,13 @@ async fn lobby_stream(
     };
 
     let stream = async_stream::stream! {
+        // Moved in, so the slot lives exactly as long as the stream does.
+        let _slot = slot;
         for (id, event) in initial {
-            yield Ok(sse_event(id, &event));
+            // Annotated because the handler now returns `Response` rather than a concrete
+            // `Sse<..>`, so there is no signature left for the error type to be inferred
+            // from. The stream still cannot fail.
+            yield Ok::<Event, Infallible>(sse_event(id, &event));
         }
         loop {
             match receiver.recv().await {
@@ -195,7 +223,9 @@ async fn lobby_stream(
         }
     };
 
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(HEARTBEAT).text("keep-alive"))
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(HEARTBEAT).text("keep-alive"))
+        .into_response()
 }
 
 fn sse_event(id: u64, event: &BrowserEvent) -> Event {
