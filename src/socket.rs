@@ -22,6 +22,9 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 use socketioxide::SocketIo;
 use socketioxide::extract::{AckSender, Data, SocketRef, State, TryData};
+// For `.with(..)` on the connect handler: the middleware half of the split in
+// `register` below, and the whole reason a first event cannot be dropped.
+use socketioxide::handler::ConnectHandler;
 use socketioxide::socket::Sid;
 
 use crate::state::{
@@ -126,23 +129,83 @@ pub struct SignalIn {
     pub to: String,
 }
 
+/// Wires the namespace up in two stages, and the split is load-bearing.
+///
+/// socketioxide sends the CONNECT packet **before** it calls the connect handler, and an
+/// async connect handler is `tokio::spawn`ed rather than awaited — `Namespace::connect` in
+/// socketioxide 0.18.6 does `socket.send(Packet::connect(..))`, then `set_connected(true)`,
+/// then `self.handler.call(..)`, and `call` for an async closure ends in `tokio::spawn`.
+/// So between a client being told it is connected and this server registering that
+/// socket's event handlers there is a gap of whatever length the scheduler decides.
+///
+/// An event that lands in that gap is **dropped in silence**. There is no handler for it,
+/// so nothing acks it, nothing errors, nothing disconnects — the client waits for an
+/// answer that was never going to come. The client conformance test in the desktop
+/// repository hit exactly this: a `join` emitted the instant CONNECT arrived, then thirty
+/// seconds of heartbeats and no `setClients`. It reproduces every time if you sleep at the
+/// top of the connect handler.
+///
+/// Middleware runs on the other side of that line. `Namespace::connect` awaits
+/// `call_middleware` **before** it sends the CONNECT packet, so anything registered there
+/// is in place before the client can physically emit anything. That is where the handlers
+/// belong, and the admission bookkeeping with them: the join handler updates
+/// `state.members` through `get_mut`, which silently does nothing when the row is absent.
+///
+/// What is left for the connect handler is the one thing that cannot happen earlier —
+/// middleware may not send to a socket that is not connected yet — which is the peer
+/// config.
 pub fn register(io: &SocketIo, state: Arc<AppState>) {
-    let io_for_ns = io.clone();
+    let io_for_handlers = io.clone();
     io.ns(
         "/",
-        async move |socket: SocketRef, State(state): State<Arc<AppState>>| {
-            let io = io_for_ns.clone();
-            on_connect(socket, io, state);
-        },
+        (async move |socket: SocketRef, State(state): State<Arc<AppState>>| {
+            on_connect(&socket, &state);
+        })
+        .with(
+            async move |socket: SocketRef, State(state): State<Arc<AppState>>| {
+                let io = io_for_handlers.clone();
+                admit(&socket, &io, &state);
+                Ok::<(), std::convert::Infallible>(())
+            },
+        ),
     );
     // The state extractor above resolves through socketioxide's own registry; this keeps
     // the handle for the paths that need it outside a handler.
     let _ = state;
 }
 
-fn on_connect(socket: SocketRef, io: SocketIo, state: Arc<AppState>) {
+/// Everything a client's first event depends on, done before the client is told it may
+/// send one.
+///
+/// The counter is incremented here rather than in the connect handler because
+/// `on_disconnect` — registered below — decrements it, and a socket that disconnects
+/// immediately would otherwise subtract a count that had not been added yet.
+///
+/// One case is not balanced, and it is worth naming rather than leaving to be discovered:
+/// if socketioxide then fails to send the CONNECT packet it calls `remove_socket` and
+/// closes the transport without running the disconnect handler, so this row and this count
+/// leak. That happens only when the client has already gone between the handshake and the
+/// connect packet, and one stale row on a dead connection is a smaller thing than an event
+/// dropped on a live one.
+fn admit(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
     state.connections.fetch_add(1, Ordering::Relaxed);
     state.members.insert(socket.id, Membership::default());
+
+    on_join(socket, io, state);
+    on_set_host(socket, io, state);
+    on_id(socket, io, state);
+    on_leave(socket, io, state);
+    on_vad(socket, io, state);
+    on_join_lobby(socket, state);
+    on_lobby(socket, io, state);
+    on_remove_lobby(socket, io, state);
+    on_signal(socket, io, state);
+    on_lobby_browser(socket, state);
+    on_disconnect(socket, io, state);
+}
+
+/// The only work that needs a socket the client already knows about.
+fn on_connect(socket: &SocketRef, state: &Arc<AppState>) {
     tracing::info!(
         connections = state.connections.load(Ordering::Relaxed),
         lobbies = state.lobby_count(),
@@ -152,18 +215,6 @@ fn on_connect(socket: SocketRef, io: SocketIo, state: Arc<AppState>) {
     if socket.emit("clientPeerConfig", &state.peer_config).is_err() {
         tracing::warn!(sid = %socket.id, "could not send the peer config");
     }
-
-    on_join(&socket, &io, &state);
-    on_set_host(&socket, &io, &state);
-    on_id(&socket, &io, &state);
-    on_leave(&socket, &io, &state);
-    on_vad(&socket, &io, &state);
-    on_join_lobby(&socket, &state);
-    on_lobby(&socket, &io, &state);
-    on_remove_lobby(&socket, &io, &state);
-    on_signal(&socket, &io, &state);
-    on_lobby_browser(&socket, &state);
-    on_disconnect(&socket, &io, &state);
 }
 
 fn on_join(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
