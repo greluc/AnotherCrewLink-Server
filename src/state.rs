@@ -270,9 +270,24 @@ impl AppState {
     /// subscriber has to be given a fresh snapshot instead.
     pub fn replay_since(&self, last_seen: Option<u64>) -> Option<Vec<(u64, BrowserEvent)>> {
         let last_seen = last_seen?;
+
+        // `last_seen` came out of a `Last-Event-ID` request header, so it is whatever the
+        // client typed rather than anything this server issued. Two ways it can be
+        // outside the log, and both have to end in a snapshot:
+        //
+        // * **Behind it.** The ordinary case -- a subscriber away longer than the log is
+        //   deep. This was already handled, but `last_seen + 1` overflowed on `u64::MAX`:
+        //   a panic under overflow checks, a silent wrap to zero in release, which then
+        //   read as "resume from the beginning".
+        // * **Ahead of it.** A position never issued. This fell through to the filter
+        //   below, matched nothing, and returned an empty replay -- so the subscriber was
+        //   told it was up to date and sat looking at an empty lobby list for ever.
+        if last_seen > self.browser_position() {
+            return None;
+        }
         let log = self.browser_log();
         let oldest = log.front().map(|(id, _)| *id)?;
-        if last_seen + 1 < oldest {
+        if last_seen.saturating_add(1) < oldest {
             return None;
         }
         Some(
@@ -413,5 +428,62 @@ mod tests {
                 "{field} is missing from the wire shape"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    fn state() -> AppState {
+        AppState::new(
+            crate::config::PeerConfigFile::default().resolve(
+                None,
+                None,
+                crate::config::DEFAULT_TURN_TTL,
+            ),
+            None,
+            "http://x".to_owned(),
+        )
+    }
+
+    #[test]
+    fn a_last_event_id_at_the_maximum_is_answered_rather_than_overflowing() {
+        // `Last-Event-ID` is a request header, so this is whatever a client sent. It used
+        // to panic under overflow checks and wrap to zero in release; and once that was
+        // fixed it still returned an *empty* replay, which tells the subscriber it is up
+        // to date and leaves it looking at nothing.
+        let state = state();
+        state.publish(BrowserEvent::RemoveLobby(1));
+        assert!(
+            state.replay_since(Some(u64::MAX)).is_none(),
+            "a position beyond anything held has to fall back to a snapshot"
+        );
+    }
+
+    #[test]
+    fn a_position_ahead_of_anything_issued_also_falls_back_to_a_snapshot() {
+        // Not only the maximum: any id this server has not issued yet. A subscriber that
+        // sends one is out of step with us, and the only honest answer is the whole list.
+        let state = state();
+        state.publish(BrowserEvent::RemoveLobby(1));
+        assert!(state.replay_since(Some(99)).is_none());
+    }
+
+    #[test]
+    fn a_position_still_held_replays_only_what_came_after_it() {
+        let state = state();
+        state.publish(BrowserEvent::RemoveLobby(1));
+        state.publish(BrowserEvent::RemoveLobby(2));
+        let replayed = state
+            .replay_since(Some(1))
+            .expect("position 1 is still held");
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].0, 2);
+    }
+
+    #[test]
+    fn no_position_means_a_snapshot() {
+        assert!(state().replay_since(None).is_none());
     }
 }

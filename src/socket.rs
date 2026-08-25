@@ -125,7 +125,20 @@ async fn remove_public_lobby(io: &SocketIo, state: &Arc<AppState>, code: &str) {
 
 #[derive(Debug, Deserialize)]
 pub struct SignalIn {
-    pub data: serde_json::Value,
+    /// The raw bytes, deliberately not a `serde_json::Value`.
+    ///
+    /// This is the one field on this server that carries an arbitrary attacker-chosen
+    /// document, and the WebSocket transport does not bound it -- `max_payload` in
+    /// `main.rs` is applied by engineioxide to the polling transport only, and the
+    /// WebSocket side leaves tungstenite's 64 MiB default in place. There is no knob for
+    /// it in socketioxide 0.18.6; `transport/ws.rs` builds a `WebSocketConfig` and sets
+    /// only `read_buffer_size`.
+    ///
+    /// Parsing that into a `Value` built a node tree several times the size of the bytes
+    /// that arrived, before anything had looked at how big it was. A `RawValue` keeps the
+    /// original slice, so the size check below happens on what was actually received and
+    /// nothing is walked, allocated per node, or re-serialised on the way out.
+    pub data: Box<RawValue>,
     pub to: String,
 }
 
@@ -606,6 +619,18 @@ fn on_signal(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
                 return;
             }
 
+            // Checked on the bytes that arrived, before anything is built from them. The
+            // envelope above is cheap and runs first; this is the second thing that can
+            // refuse, and it refuses without ever having allocated a copy.
+            if signal.data.get().len() > MAX_SIGNAL_BYTES {
+                state
+                    .counters
+                    .refused_oversize
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(sid = %sid, bytes = signal.data.get().len(), "refused an oversized signal");
+                return;
+            }
+
             let payload = serde_json::json!({
                 "data": signal.data,
                 "from": sid.to_string(),
@@ -613,14 +638,6 @@ fn on_signal(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
             let Some(rendered) = render(&payload) else {
                 return;
             };
-            if rendered.get().len() > MAX_SIGNAL_BYTES {
-                state
-                    .counters
-                    .refused_oversize
-                    .fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(sid = %sid, bytes = rendered.get().len(), "refused an oversized signal");
-                return;
-            }
 
             deliver(&io, &state, target, "signal", &*rendered);
         },
