@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use socketioxide::socket::Sid;
 use tokio::sync::broadcast;
 
-use crate::config::ClientPeerConfig;
+use crate::config::PeerConfigProvider;
 
 /// The identity a client claims for itself. The server does not verify it — that is
 /// inherited from CrewLink's design and is out of scope here — but it records it, and
@@ -210,7 +210,7 @@ pub struct AppState {
     pub started: Instant,
     pub name: Option<String>,
     pub public_address: String,
-    pub peer_config: ClientPeerConfig,
+    pub peer_config: PeerConfigProvider,
 
     pub lobbies: DashMap<String, Lobby>,
     pub members: DashMap<Sid, Membership>,
@@ -234,7 +234,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(
-        peer_config: ClientPeerConfig,
+        peer_config: PeerConfigProvider,
         name: Option<String>,
         public_address: String,
     ) -> Self {

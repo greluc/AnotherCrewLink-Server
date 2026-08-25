@@ -6,8 +6,12 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::Engine as _;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha1::Sha1;
 
 /// An ICE server as the client expects to receive it.
 ///
@@ -74,6 +78,115 @@ impl Default for PeerConfigFile {
     }
 }
 
+/// How long an issued TURN credential stays valid, when `TURN_TTL_SECONDS` says nothing.
+///
+/// A day. The credential is handed out once, in `clientPeerConfig`, at the moment a client
+/// connects — so the ceiling is not "how long should a secret live" but "how long might a
+/// session last before ICE needs to gather again". A player who leaves the client open
+/// overnight and starts a lobby in the morning must not find the relay refusing them.
+pub const DEFAULT_TURN_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A relay that issues a fresh credential per client instead of sharing one forever.
+#[derive(Debug, Clone)]
+pub struct EphemeralTurn {
+    pub host: String,
+    pub port: u16,
+    pub secret: String,
+    pub ttl: Duration,
+}
+
+/// coturn's `use-auth-secret` scheme, which is the reason the relay no longer has to be
+/// configured twice.
+///
+/// The username is an expiry timestamp, and the password is the HMAC of that username
+/// under a secret both sides hold. coturn recomputes it on arrival, so nothing has to be
+/// stored, synchronised or revoked — and this server never has to be told a password,
+/// because it derives the same one coturn will.
+///
+/// **SHA-1 is not a choice.** It is what coturn computes, so this has to compute it too.
+/// It is a MAC over a value the client is given anyway, keyed by a secret; the collision
+/// weaknesses that retired SHA-1 for signatures do not apply, and HMAC-SHA1 has no
+/// practical break. If it ever gets one, coturn moving is the prerequisite, not us.
+#[must_use]
+pub fn turn_credentials(secret: &str, ttl: Duration, now: SystemTime) -> (String, String) {
+    let expiry = now
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .saturating_add(ttl)
+        .as_secs();
+    let username = expiry.to_string();
+
+    // `new_from_slice` only fails for key lengths HMAC cannot take, and HMAC takes every
+    // length — long keys are hashed down. There is no error case to handle.
+    let mut mac =
+        <Hmac<Sha1>>::new_from_slice(secret.as_bytes()).expect("HMAC accepts a key of any length");
+    mac.update(username.as_bytes());
+    let credential = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+
+    (username, credential)
+}
+
+/// The peer configuration, ready to be handed to a client.
+///
+/// This used to be a finished `ClientPeerConfig` resolved once at start-up and cloned per
+/// connection. It cannot be, once the credentials expire: the timestamp in the username
+/// has to be minted when the client asks. Everything that does *not* change is still
+/// resolved once and cloned, and the per-connection work is one HMAC over roughly ten
+/// bytes — nanoseconds, against a WebSocket handshake that has just cost a round trip.
+#[derive(Debug, Clone)]
+pub struct PeerConfigProvider {
+    base: ClientPeerConfig,
+    ephemeral: Option<EphemeralTurn>,
+}
+
+impl PeerConfigProvider {
+    /// The configuration for a client connecting now.
+    #[must_use]
+    pub fn issue(&self) -> ClientPeerConfig {
+        self.issue_at(SystemTime::now())
+    }
+
+    /// The same, at a stated time, so the credential can be tested without waiting a day.
+    #[must_use]
+    pub fn issue_at(&self, now: SystemTime) -> ClientPeerConfig {
+        let Some(turn) = &self.ephemeral else {
+            return self.base.clone();
+        };
+        let (username, credential) = turn_credentials(&turn.secret, turn.ttl, now);
+        let mut config = self.base.clone();
+        // UDP first and TCP second, for the reason the static path gives below: a `turn:`
+        // URL with no transport means UDP, and the networks that need a relay most are
+        // often the ones that block outbound UDP.
+        for transport in ["udp", "tcp"] {
+            config.ice_servers.push(IceServer {
+                urls: Urls::One(format!(
+                    "turn:{}:{}?transport={transport}",
+                    turn.host, turn.port
+                )),
+                username: Some(username.clone()),
+                credential: Some(credential.clone()),
+            });
+        }
+        config
+    }
+
+    /// How many ICE servers a client is told about, for the start-up log line.
+    #[must_use]
+    pub fn advertised_count(&self) -> usize {
+        self.base.ice_servers.len() + if self.ephemeral.is_some() { 2 } else { 0 }
+    }
+
+    #[must_use]
+    pub fn force_relay_only(&self) -> bool {
+        self.base.force_relay_only
+    }
+
+    #[must_use]
+    pub fn is_ephemeral(&self) -> bool {
+        self.ephemeral.is_some()
+    }
+}
+
 /// What every client is told at connection time. The field names are the client's, not
 /// this file's: `src/renderer/validateClientPeerConfig.ts` rejects anything else.
 #[derive(Debug, Clone, Serialize)]
@@ -109,9 +222,19 @@ impl PeerConfigFile {
         }
     }
 
-    /// Resolves the relay advertisement once, at start-up, so the per-connection path
-    /// does no work beyond cloning a finished value.
-    pub fn resolve(self, hostname: Option<&str>) -> ClientPeerConfig {
+    /// Resolves everything that does not change, once, at start-up.
+    ///
+    /// With `turn_secret` set the relay is advertised with a credential minted per
+    /// connection — see [`PeerConfigProvider`] — and `relay.username` / `relay.credential`
+    /// in the file are ignored. Without it the file's static pair is used, exactly as
+    /// before, because a deployment that has not moved to a shared secret must keep
+    /// working across the upgrade.
+    pub fn resolve(
+        self,
+        hostname: Option<&str>,
+        turn_secret: Option<&str>,
+        turn_ttl: Duration,
+    ) -> PeerConfigProvider {
         let relay_host = self
             .relay
             .host
@@ -119,6 +242,7 @@ impl PeerConfigFile {
             .or_else(|| hostname.map(str::to_owned));
 
         let mut ice_servers = self.ice_servers;
+        let mut ephemeral = None;
 
         if self.relay.enabled {
             match relay_host {
@@ -126,6 +250,21 @@ impl PeerConfigFile {
                     tracing::error!(
                         "relay.enabled is set but there is no relay.host and no HOSTNAME in the environment"
                     );
+                }
+                Some(host) if turn_secret.is_some_and(|secret| !secret.is_empty()) => {
+                    // Nothing is pushed here: the two entries are minted per connection,
+                    // because the username is an expiry timestamp.
+                    ephemeral = Some(EphemeralTurn {
+                        host,
+                        port: self.relay.port,
+                        secret: turn_secret.unwrap_or_default().to_owned(),
+                        ttl: turn_ttl,
+                    });
+                    if !self.relay.username.is_empty() || !self.relay.credential.is_empty() {
+                        tracing::warn!(
+                            "TURN_SECRET is set, so relay.username and relay.credential in the peer config are ignored"
+                        );
+                    }
                 }
                 Some(host) => {
                     if self.relay.username.is_empty() || self.relay.credential.is_empty() {
@@ -156,9 +295,12 @@ impl PeerConfigFile {
             }
         }
 
-        ClientPeerConfig {
-            force_relay_only: self.force_relay_only,
-            ice_servers,
+        PeerConfigProvider {
+            base: ClientPeerConfig {
+                force_relay_only: self.force_relay_only,
+                ice_servers,
+            },
+            ephemeral,
         }
     }
 }
@@ -173,6 +315,14 @@ pub struct Settings {
     /// Reported by `/health` and `/` so an operator can tell which address a
     /// reverse-proxied instance believes it is serving.
     pub public_address: String,
+    /// The secret coturn was started with as `--static-auth-secret`.
+    ///
+    /// Its presence is what switches the relay from a shared password in the peer config
+    /// to a credential minted per client. Environment rather than file, so it sits beside
+    /// coturn's own copy in one `.env` and there is nothing to keep in step by hand.
+    pub turn_secret: Option<String>,
+    /// How long an issued credential is good for.
+    pub turn_ttl: Duration,
 }
 
 impl Settings {
@@ -201,7 +351,155 @@ impl Settings {
             peer_config_path,
             public_address: std::env::var("ADDRESS")
                 .unwrap_or_else(|_| format!("http://127.0.0.1:{port}")),
+            turn_secret: std::env::var("TURN_SECRET").ok().filter(|s| !s.is_empty()),
+            turn_ttl: std::env::var("TURN_TTL_SECONDS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .map_or(DEFAULT_TURN_TTL, Duration::from_secs),
         }
+    }
+}
+
+#[cfg(test)]
+mod ephemeral_turn_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+
+    fn at(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    fn ephemeral(secret: &str, ttl: Duration) -> PeerConfigProvider {
+        toml::from_str::<PeerConfigFile>(
+            r#"
+            [relay]
+            enabled = true
+            host = "turn.example.com"
+            port = 3478
+            "#,
+        )
+        .expect("parses")
+        .resolve(None, Some(secret), ttl)
+    }
+
+    #[test]
+    fn the_credential_is_the_one_coturn_will_recompute() {
+        // A fixed vector, so a refactor that changes the algorithm fails here rather than
+        // in a lobby. coturn's `use-auth-secret` takes the username as the message and the
+        // shared secret as the key, HMAC-SHA1, base64 of the raw tag -- and the username
+        // is the expiry, not the time of issue.
+        //
+        // The expected value is not this code's own output written down. It was computed
+        // independently:
+        //
+        //     python -c "import hmac,hashlib,base64;         //         print(base64.b64encode(hmac.new(b's3cr3t', b'1003600', hashlib.sha1).digest()).decode())"
+        //
+        // which is the point of a vector: if it only ever agreed with the implementation
+        // beside it, it would pass through any change to that implementation.
+        let (username, credential) =
+            turn_credentials("s3cr3t", Duration::from_secs(3600), at(1_000_000));
+        assert_eq!(username, "1003600");
+        assert_eq!(credential, "CuWi1kXaddrfNv71pBp3HSPg7FU=");
+    }
+
+    #[test]
+    fn a_later_client_gets_a_different_credential() {
+        // The whole point of the scheme: nothing is shared between two players, so one
+        // leaked credential expires instead of having to be rotated everywhere.
+        let provider = ephemeral("s3cr3t", Duration::from_secs(3600));
+        let first = provider.issue_at(at(1_000_000));
+        let second = provider.issue_at(at(1_000_060));
+        assert_ne!(first.ice_servers, second.ice_servers);
+    }
+
+    #[test]
+    fn the_relay_is_still_advertised_over_both_transports() {
+        // The static path's reason applies unchanged: a `turn:` URL with no transport
+        // means UDP, and the networks that need a relay most often block outbound UDP.
+        let config = ephemeral("s3cr3t", DEFAULT_TURN_TTL).issue_at(at(0));
+        let urls: Vec<&Urls> = config.ice_servers.iter().map(|s| &s.urls).collect();
+        assert_eq!(
+            urls,
+            vec![
+                &Urls::One("stun:stun.l.google.com:19302".to_owned()),
+                &Urls::One("turn:turn.example.com:3478?transport=udp".to_owned()),
+                &Urls::One("turn:turn.example.com:3478?transport=tcp".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn both_transports_carry_the_same_credential() {
+        // One allocation, one credential. Two different ones would mean two HMACs and a
+        // client that authenticates over UDP but not over TCP, which is the failure that
+        // only shows up on the networks that fall back to TCP.
+        let config = ephemeral("s3cr3t", DEFAULT_TURN_TTL).issue_at(at(500));
+        let turn: Vec<_> = config
+            .ice_servers
+            .iter()
+            .filter(|server| server.username.is_some())
+            .collect();
+        assert_eq!(turn.len(), 2);
+        assert_eq!(turn[0].username, turn[1].username);
+        assert_eq!(turn[0].credential, turn[1].credential);
+    }
+
+    #[test]
+    fn the_username_is_an_expiry_in_the_future_and_the_ttl_decides_how_far() {
+        let issued = ephemeral("s3cr3t", Duration::from_secs(60)).issue_at(at(1_000));
+        let username = issued.ice_servers[1].username.clone().unwrap();
+        assert_eq!(username.parse::<u64>().unwrap(), 1_060);
+    }
+
+    #[test]
+    fn no_secret_means_the_static_path_and_nothing_minted() {
+        // Deployments that have not moved to a shared secret must keep working across the
+        // upgrade, so an absent TURN_SECRET is not an error and changes nothing.
+        let provider = toml::from_str::<PeerConfigFile>(
+            r#"
+            [relay]
+            enabled = true
+            host = "turn.example.com"
+            username = "u"
+            credential = "p"
+            "#,
+        )
+        .expect("parses")
+        .resolve(None, None, DEFAULT_TURN_TTL);
+        assert!(!provider.is_ephemeral());
+        let config = provider.issue();
+        assert_eq!(config.ice_servers[1].username.as_deref(), Some("u"));
+        assert_eq!(config.ice_servers[1].credential.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn an_empty_secret_counts_as_no_secret() {
+        // `TURN_SECRET=` in a .env file is how an operator turns it off, and an empty
+        // string keyed into an HMAC would otherwise be a valid, guessable secret.
+        let provider = toml::from_str::<PeerConfigFile>(
+            r#"
+            [relay]
+            enabled = true
+            host = "turn.example.com"
+            username = "u"
+            credential = "p"
+            "#,
+        )
+        .expect("parses")
+        .resolve(None, Some(""), DEFAULT_TURN_TTL);
+        assert!(!provider.is_ephemeral());
+    }
+
+    #[test]
+    fn the_advertised_count_matches_what_is_actually_issued() {
+        // The start-up log line reports this, and a number that disagrees with the config
+        // it describes is worse than no number.
+        let provider = ephemeral("s3cr3t", DEFAULT_TURN_TTL);
+        assert_eq!(
+            provider.advertised_count(),
+            provider.issue().ice_servers.len()
+        );
     }
 }
 
@@ -238,7 +536,7 @@ mod peer_config_tests {
             credential = "secret"
             "#,
         );
-        let resolved = config.resolve(None);
+        let resolved = config.resolve(None, None, DEFAULT_TURN_TTL).issue();
         let json = serde_json::to_string(&resolved).expect("serialises");
         assert_eq!(json, LIVE);
     }
@@ -260,7 +558,7 @@ mod peer_config_tests {
             credential = "c"
             "#,
         );
-        let resolved = config.resolve(None);
+        let resolved = config.resolve(None, None, DEFAULT_TURN_TTL).issue();
         assert_eq!(resolved.ice_servers.len(), 3);
         assert!(matches!(
             &resolved.ice_servers[0].urls,
@@ -293,7 +591,14 @@ mod peer_config_tests {
             credential = "c"
             "#,
         );
-        assert_eq!(config.resolve(None).ice_servers.len(), 1);
+        assert_eq!(
+            config
+                .resolve(None, None, DEFAULT_TURN_TTL)
+                .issue()
+                .ice_servers
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -308,7 +613,9 @@ mod peer_config_tests {
             credential = "c"
             "#,
         );
-        let resolved = config.resolve(Some("from-env.example"));
+        let resolved = config
+            .resolve(Some("from-env.example"), None, DEFAULT_TURN_TTL)
+            .issue();
         assert!(resolved.ice_servers.iter().any(
             |server| matches!(&server.urls, Urls::One(url) if url == "turn:from-env.example:3478?transport=udp")
         ));
@@ -330,7 +637,7 @@ mod peer_config_tests {
             credential = "c"
             "#,
         );
-        let resolved = config.resolve(None);
+        let resolved = config.resolve(None, None, DEFAULT_TURN_TTL).issue();
         assert_eq!(resolved.ice_servers.len(), 1, "only the STUN server");
     }
 
@@ -345,7 +652,9 @@ mod peer_config_tests {
         let config: PeerConfigFile = toml::from_str(&text).expect("the example parses");
         assert!(!config.relay.enabled);
         assert!(!config.force_relay_only);
-        let resolved = config.resolve(Some("example.com"));
+        let resolved = config
+            .resolve(Some("example.com"), None, DEFAULT_TURN_TTL)
+            .issue();
         assert_eq!(resolved.ice_servers.len(), 1);
     }
 

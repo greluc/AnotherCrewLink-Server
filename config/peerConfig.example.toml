@@ -20,6 +20,11 @@ urls = "stun:stun.l.google.com:19302"
 # relay to begin with. Anything here is handed to every client that connects, so
 # treat the credentials as public and rotate them if they ever gate something that
 # matters.
+#
+# **Credentials are no longer set here** if TURN_SECRET is in the environment. coturn takes
+# that value as --static-auth-secret and this server derives a time-limited credential per
+# client from the same one, so `username` and `credential` below are ignored and a warning
+# says so at start-up. They remain for deployments that have not moved yet.
 [relay]
 enabled = false
 # Defaults to the HOSTNAME environment variable when omitted.

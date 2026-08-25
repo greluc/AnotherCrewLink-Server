@@ -212,7 +212,12 @@ fn on_connect(socket: &SocketRef, state: &Arc<AppState>) {
         "socket connected"
     );
 
-    if socket.emit("clientPeerConfig", &state.peer_config).is_err() {
+    // `issue()` rather than a clone: with a shared TURN secret the credential carries an
+    // expiry, so it is minted for this client at this moment. One HMAC over ten bytes.
+    if socket
+        .emit("clientPeerConfig", &state.peer_config.issue())
+        .is_err()
+    {
         tracing::warn!(sid = %socket.id, "could not send the peer config");
     }
 }
