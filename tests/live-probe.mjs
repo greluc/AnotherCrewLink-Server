@@ -49,12 +49,26 @@ check('at least one STUN server is advertised', stun.length > 0);
 if (turn.length > 0) {
 	check('a relay is advertised over UDP and TCP', turn.length === 2, `${turn.length} entries`);
 	const [ta, tb] = [ca, cb].map((c) => c.iceServers.find((s) => String(s.urls).startsWith('turn:')));
-	// Two clients must not share a credential. When this first ran against the live
-	// server they did: the username was the expiry alone, so everybody connecting in the
-	// same second held the same one. Fixed by putting the socket id in the username;
-	// this is what would catch it coming back.
+	// The *shape*, not a comparison of two samples.
+	//
+	// This asked whether two usernames differed, and that is timing-dependent in the
+	// direction that matters least: against a server issuing the bare expiry, two clients
+	// that happen to connect either side of a second boundary get different timestamps
+	// and the check passes. It did exactly that once, on a server that provably had the
+	// old behaviour -- a false pass, on the question the check exists for.
+	//
+	// A per-client credential has a client identifier after the expiry. That is either
+	// there or it is not, whatever the clock does.
+	const perClient = /^\d+:.+/.test(ta.username);
 	check(
-		'each client gets its own relay credential',
+		'the relay credential is minted per client, not per second',
+		perClient,
+		perClient ? '' : `username is "${ta.username}" — expiry only, so everyone connecting in that second shares it`
+	);
+	// Kept as well, because it is the property the shape is supposed to deliver, and a
+	// shape that stopped delivering it would still be the wrong shape.
+	check(
+		'and two clients really do get different ones',
 		ta.username !== tb.username || ta.credential !== tb.credential,
 		ta.username === tb.username ? `both were given "${ta.username}"` : ''
 	);
