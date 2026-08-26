@@ -85,8 +85,15 @@ else
     echo "== building =="
     SERVER_IMAGE=anothercrewlink-server:test
     COTURN_IMAGE=anothercrewlink-coturn:test
-    $RUNTIME build -q -t "$SERVER_IMAGE" -f Containerfile . >/dev/null
-    $RUNTIME build -q -t "$COTURN_IMAGE" -f containers/coturn/Containerfile containers/coturn >/dev/null
+    # `--format docker` under podman: OCI has no health check field, so the default would
+    # build an image whose HEALTHCHECK line had been dropped. Docker writes schema 2 and
+    # takes no such flag.
+    fmt=""
+    [ "$RUNTIME" = podman ] && fmt="--format docker"
+    # shellcheck disable=SC2086
+    $RUNTIME build $fmt -q -t "$SERVER_IMAGE" -f Containerfile . >/dev/null
+    # shellcheck disable=SC2086
+    $RUNTIME build $fmt -q -t "$COTURN_IMAGE" -f containers/coturn/Containerfile containers/coturn >/dev/null
 fi
 
 echo "== network =="

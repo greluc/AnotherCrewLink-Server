@@ -126,17 +126,23 @@ enable, because `WantedBy=default.target` in the file does that when the generat
 ## If the first start times out
 
 `acl-server.container` sets `Notify=healthy`, so systemd holds the unit in "activating"
-until the container reports healthy rather than merely running. That is the nicer
-behaviour — `systemctl start` returning means it is actually serving — and it is the one
-line here that was never exercised under real Podman, because the machine it was written
-on has none.
+until the container reports healthy rather than merely running. `systemctl start`
+returning then means it is actually serving.
 
-The image does declare the health check it waits on (`/app/acl-healthcheck`, 10 s start
-period, verified on the built image), and the container answers `/health` under exactly
-this unit's hardening. So the ingredients are right. But if `systemctl --user start
-acl-server` sits for ninety seconds and then reports a failure while `podman ps` shows a
-container that is up and answering, that line is the suspect: delete it, reload, and the
-unit becomes started-when-running like any other.
+> **This was broken in 0.1.0, and the images are the reason.** Podman builds OCI by
+> default, the OCI image specification has no field for a health check, and so
+> `HEALTHCHECK` was dropped from every published image without a word. Starting the unit
+> failed immediately with `sdnotify policy "healthy" requires a healthcheck to be set` --
+> not the slow failure this section originally warned about. It was missed because the
+> check had been verified on an image built with Docker, which writes schema 2 and keeps
+> it. Both builds now pass `--format docker`, and CI asserts the health check is present
+> in the image before it may be published. **Use 0.1.1 or later, or delete the
+> `Notify=healthy` line.**
+
+If `systemctl --user start acl-server` sits for ninety seconds and then reports a failure
+while `podman ps` shows a container that is up and answering, that line is still the
+suspect for a different reason -- systemd and the container disagreeing about readiness.
+Deleting it makes the unit started-when-running like any other.
 
 ```bash
 podman healthcheck run acl-server    # what systemd is waiting for
