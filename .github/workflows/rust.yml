@@ -115,8 +115,10 @@ jobs:
 
       - name: Build both images
         run: |
-          podman build -t anothercrewlink-server:ci -f Containerfile .
-          podman build -t anothercrewlink-coturn:ci -f containers/coturn/Containerfile containers/coturn
+          # `--format docker` for the reason the publish workflow gives: OCI has no health
+          # check field, so podman's default silently drops HEALTHCHECK.
+          podman build --format docker -t anothercrewlink-server:ci -f Containerfile .
+          podman build --format docker -t anothercrewlink-coturn:ci -f containers/coturn/Containerfile containers/coturn
 
       # A shell-less image cannot be smoke-tested with `run ... sh -c`, so this starts it
       # the way a quadlet does and asks its own healthcheck binary.

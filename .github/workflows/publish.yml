@@ -91,9 +91,21 @@ jobs:
           # pull one directly if it ever wants to.
           echo "arch_tag=${image}:sha-${GITHUB_SHA::12}-${{ matrix.arch.name }}" >> "$GITHUB_OUTPUT"
 
+      # `--format docker`, and it is not a preference.
+      #
+      # The OCI image specification has no field for a health check, so `podman build` --
+      # which produces OCI by default -- discards the `HEALTHCHECK` line in the
+      # Containerfile without a word. The published 0.1.0 images therefore had none, and
+      # `Notify=healthy` in the quadlet was rejected outright:
+      #
+      #     sdnotify policy "healthy" requires a healthcheck to be set
+      #
+      # Nothing here caught it because the check had been verified on an image built with
+      # Docker, which writes schema 2 and keeps it. Docker format is what carries a health
+      # check, and that is the whole reason to ask for it.
       - name: Build
         run: |
-          podman build --platform ${{ matrix.arch.platform }} \
+          podman build --format docker --platform ${{ matrix.arch.platform }} \
             -t "${{ steps.names.outputs.arch_tag }}" \
             -f ${{ matrix.image.containerfile }} ${{ matrix.image.context }}
 
@@ -134,6 +146,16 @@ jobs:
           # single-architecture base digests, which made a build for the wrong target fail
           # outright; they pin index digests now so that arm64 is possible at all, and this
           # is what replaced that guarantee.
+          # The health check has to have survived the build. This is the assertion the
+          # 0.1.0 images needed and did not have: they started, answered /health, and were
+          # published carrying no health check at all -- which surfaced only as a quadlet
+          # systemd refused to start.
+          if [ "${{ matrix.image.name }}" = anothercrewlink-server ]; then
+            podman image inspect "$image" --format '{{.Config.Healthcheck.Test}}' > hc.txt
+            grep -q acl-healthcheck hc.txt \
+              || { echo "no health check in the image -- is --format docker still set?"; cat hc.txt; exit 1; }
+            echo "health check: present"
+          fi
           got=$(podman image inspect "$image" --format '{{.Architecture}}')
           [ "$got" = "${{ matrix.arch.name }}" ] || { echo "built $got, expected ${{ matrix.arch.name }}"; exit 1; }
           echo "architecture: $got"
