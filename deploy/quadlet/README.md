@@ -72,6 +72,26 @@ systemctl --user start acl-server acl-coturn
 `daemon-reload` is what turns the `.container` files into units; there is nothing to
 enable, because `WantedBy=default.target` in the file does that when the generator runs.
 
+## If the first start times out
+
+`acl-server.container` sets `Notify=healthy`, so systemd holds the unit in "activating"
+until the container reports healthy rather than merely running. That is the nicer
+behaviour — `systemctl start` returning means it is actually serving — and it is the one
+line here that was never exercised under real Podman, because the machine it was written
+on has none.
+
+The image does declare the health check it waits on (`/app/acl-healthcheck`, 10 s start
+period, verified on the built image), and the container answers `/health` under exactly
+this unit's hardening. So the ingredients are right. But if `systemctl --user start
+acl-server` sits for ninety seconds and then reports a failure while `podman ps` shows a
+container that is up and answering, that line is the suspect: delete it, reload, and the
+unit becomes started-when-running like any other.
+
+```bash
+podman healthcheck run acl-server    # what systemd is waiting for
+podman logs acl-server
+```
+
 ## Checking it
 
 ```bash
