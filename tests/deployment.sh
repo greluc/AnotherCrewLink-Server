@@ -9,6 +9,14 @@
 #     tests/deployment.sh                 # podman, the deployment runtime
 #     ACL_RUNTIME=docker tests/deployment.sh
 #
+# By default it builds the images from this checkout. Point it at published ones instead
+# to check what is actually deployable rather than what this tree can produce:
+#
+#     ACL_IMAGE_SERVER=ghcr.io/greluc/anothercrewlink-server:edge #     ACL_IMAGE_COTURN=ghcr.io/greluc/anothercrewlink-coturn:edge #     tests/deployment.sh
+#
+# Those are two different questions. A tree that builds a working pair says nothing about
+# whether the pair in the registry is the same pair, or is public, or exists.
+#
 # Uses a bridge network with a fixed subnet rather than host networking, because coturn's
 # --external-ip has to be known before it starts and a pinned address is the only way to
 # know it. Host networking is what the quadlet uses in production and is checked there;
@@ -23,6 +31,8 @@ COTURN_IP=10.89.7.10
 SERVER_IP=10.89.7.11
 TURN_PORT=3478
 SECRET="deployment-test-$$"
+SERVER_IMAGE="${ACL_IMAGE_SERVER:-}"
+COTURN_IMAGE="${ACL_IMAGE_COTURN:-}"
 
 command -v "$RUNTIME" >/dev/null || { echo "no $RUNTIME on PATH"; exit 1; }
 if [ "$RUNTIME" != podman ]; then
@@ -65,9 +75,19 @@ urls = "stun:stun.l.google.com:19302"
 enabled = true
 TOML
 
-echo "== building =="
-$RUNTIME build -q -t anothercrewlink-server:test -f Containerfile . >/dev/null
-$RUNTIME build -q -t anothercrewlink-coturn:test -f containers/coturn/Containerfile containers/coturn >/dev/null
+if [ -n "$SERVER_IMAGE" ] && [ -n "$COTURN_IMAGE" ]; then
+    echo "== pulling =="
+    echo "  server: $SERVER_IMAGE"
+    echo "  coturn: $COTURN_IMAGE"
+    $RUNTIME pull -q "$SERVER_IMAGE" >/dev/null
+    $RUNTIME pull -q "$COTURN_IMAGE" >/dev/null
+else
+    echo "== building =="
+    SERVER_IMAGE=anothercrewlink-server:test
+    COTURN_IMAGE=anothercrewlink-coturn:test
+    $RUNTIME build -q -t "$SERVER_IMAGE" -f Containerfile . >/dev/null
+    $RUNTIME build -q -t "$COTURN_IMAGE" -f containers/coturn/Containerfile containers/coturn >/dev/null
+fi
 
 echo "== network =="
 $RUNTIME network rm -f "$NET" >/dev/null 2>&1 || true
@@ -81,7 +101,7 @@ $RUNTIME run -d --name acl-t-coturn --network "$NET" --ip "$COTURN_IP" \
     -e TURN_EXTERNAL_IP="$COTURN_IP" \
     -e TURN_PORT="$TURN_PORT" \
     -e TURN_REALM=deployment.test \
-    anothercrewlink-coturn:test \
+    "$COTURN_IMAGE" \
     --allowed-peer-ip="10.89.7.0-10.89.7.255" >/dev/null
 
 echo "== server =="
@@ -93,7 +113,7 @@ $RUNTIME run -d --name acl-t-server --network "$NET" --ip "$SERVER_IP" \
     -e BIND=0.0.0.0 \
     -p 127.0.0.1:19736:9736 \
     -v "$(mount_path "$WORK")/config:/app/config:ro" \
-    anothercrewlink-server:test >/dev/null
+    "$SERVER_IMAGE" >/dev/null
 
 echo "== waiting =="
 for _ in $(seq 1 40); do
@@ -148,7 +168,7 @@ echo "  username:   $USERNAME"
 echo
 run_uclient() {
     $RUNTIME run --rm --network "$NET" --entrypoint turnutils_uclient \
-        anothercrewlink-coturn:test \
+        "$COTURN_IMAGE" \
         -u "$1" -w "$2" -p "$TURN_PORT" -n 2 -y "$COTURN_IP" 2>&1
 }
 

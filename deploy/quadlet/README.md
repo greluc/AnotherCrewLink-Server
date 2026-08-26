@@ -51,6 +51,19 @@ podman login ghcr.io -u YOUR_GITHUB_USER   # a PAT with read:packages as the pas
 a reboot for a user without lingering — so if you go this route, enable lingering first
 (below) and check that the units still start after a reboot.
 
+### Checking the published pair yourself
+
+The deployment verification runs against whatever images you point it at, so it can be
+aimed at the registry rather than at a local build:
+
+```bash
+ACL_IMAGE_SERVER=ghcr.io/greluc/anothercrewlink-server:edge ACL_IMAGE_COTURN=ghcr.io/greluc/anothercrewlink-coturn:edge tests/deployment.sh
+```
+
+That is a different question from "does this tree build something that works", and neither
+answers the other. CI runs it weekly against the registry, without logging in, so a package
+that stops being publicly pullable is noticed before a deployment discovers it.
+
 ### Verifying what you pulled
 
 Each image carries a build provenance attestation naming the workflow and the commit that
