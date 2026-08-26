@@ -7,8 +7,9 @@
 # told about. See deploy/coturn-dynamic-ip.md for the conditions this assumes.
 #
 # 4.17.2 is the current stable (2026-08-10), on the same Alpine 3.24 the server image
-# uses, so one distribution's advisories cover both. Digest-pinned to the amd64 manifest.
-FROM coturn/coturn:4.17.2-alpine3.24@sha256:ea86b1d11fb4e75960570684538cd438a05d60c09921f4dd6af4e840066e42bb
+# uses, so one distribution's advisories cover both. Digest-pinned to the multi-arch index;
+# the publish workflow names the architecture with --platform.
+FROM coturn/coturn:4.17.2-alpine3.24@sha256:771a95d04cb97bbc5bfc672e5fdf455591c7d2b2a15f02bb9ceda3e27561695f
 
 LABEL org.opencontainers.image.title="coturn for AnotherCrewLink" \
       org.opencontainers.image.description="coturn with dynamic external-ip discovery for residential lines" \

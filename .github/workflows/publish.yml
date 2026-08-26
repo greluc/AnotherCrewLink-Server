@@ -1,7 +1,7 @@
 name: Publish images
 
-# Publishes both container images to GitHub Container Registry, so the machine that runs
-# them never has to build them.
+# Publishes both container images to GitHub Container Registry, for amd64 and arm64, so
+# the machine that runs them never has to build them.
 #
 # That is not a convenience. A release build of this workspace with LTO wants more memory
 # than a small VM has, and the build tool is what falls over rather than the compiler —
@@ -10,6 +10,13 @@ name: Publish images
 #
 # ghcr.io rather than Docker Hub because the workflow's own token can push to it: no
 # secret to configure, none to rotate, and none to leak.
+#
+# **Each architecture is built on a runner of that architecture**, not under emulation.
+# GitHub gives public repositories arm64 runners, and a release build with LTO through
+# QEMU is slow enough to be its own problem — but the reason that matters is the smoke
+# test. An image checked under emulation has not been checked on the thing that will run
+# it. Nothing here is published without having started, natively, under exactly the
+# hardening its quadlet applies.
 
 on:
   push:
@@ -26,8 +33,8 @@ on:
       - '.github/workflows/publish.yml'
   # Releases are the other trigger, and deliberately a separate one. A `tags:` filter in
   # the block above would be evaluated against the same `paths:` list, and a tag pushed
-  # onto an existing commit can present an empty diff -- so the release that most needs
-  # an image would be the one silently skipped.
+  # onto an existing commit can present an empty diff -- so the release that most needs an
+  # image would be the one silently skipped.
   release:
     types: [published]
   workflow_dispatch:
@@ -39,71 +46,66 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  # ---------------------------------------------------------------------------------
+  # One image, one architecture, on a runner of that architecture.
+  # ---------------------------------------------------------------------------------
+  build:
+    runs-on: ${{ matrix.arch.runner }}
 
     permissions:
       contents: read
-      # To push to ghcr.io.
       packages: write
-      # For the build provenance attestation below.
-      id-token: write
-      attestations: write
 
     strategy:
-      # One image failing to publish must not hide the state of the other, and the two
-      # are independent artefacts with independent reasons to break.
+      # One image or one architecture failing must not hide the state of the others: all
+      # four are independent artefacts with independent reasons to break.
       fail-fast: false
       matrix:
-        include:
+        image:
           - name: anothercrewlink-server
             containerfile: Containerfile
             context: .
           - name: anothercrewlink-coturn
             containerfile: containers/coturn/Containerfile
             context: containers/coturn
+        arch:
+          - name: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - name: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - name: Check out Git repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # podman, matching the deployment. Building with one engine and deploying with
-      # another leaves the interesting failures for the server to find, and this branch
-      # has already produced two of those.
-      - name: Work out the tags
-        id: tags
+      - name: Names
+        id: names
         run: |
-          repo_owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          image="${REGISTRY}/${repo_owner}/${{ matrix.name }}"
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          image="${REGISTRY}/${owner}/${{ matrix.image.name }}"
           echo "image=${image}" >> "$GITHUB_OUTPUT"
-          # Every image is addressable by the commit that produced it, always. The moving
-          # tags are additional, never the only way back to a build.
-          tags="${image}:sha-${GITHUB_SHA::12}"
-          release_tag="${{ github.event.release.tag_name }}"
-          if [ -n "${release_tag}" ]; then
-            tags="${tags} ${image}:${release_tag} ${image}:latest"
-          else
-            tags="${tags} ${image}:edge"
-          fi
-          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
-          echo "Publishing: ${tags}"
+          # The per-architecture tag is an intermediate: it gives the manifest job
+          # something to point at. It stays afterwards, so a single-architecture host can
+          # pull one directly if it ever wants to.
+          echo "arch_tag=${image}:sha-${GITHUB_SHA::12}-${{ matrix.arch.name }}" >> "$GITHUB_OUTPUT"
 
       - name: Build
         run: |
-          args=""
-          for t in ${{ steps.tags.outputs.tags }}; do args="$args -t $t"; done
-          # shellcheck disable=SC2086
-          podman build $args -f ${{ matrix.containerfile }} ${{ matrix.context }}
+          podman build --platform ${{ matrix.arch.platform }} \
+            -t "${{ steps.names.outputs.arch_tag }}" \
+            -f ${{ matrix.image.containerfile }} ${{ matrix.image.context }}
 
-      # Smoke-tested before it is published, not after. An image that cannot start is not
-      # worth a tag, and both of these have failed to start for reasons no diff showed:
-      # a coturn flag removed upstream, and a capability the binary needs to be exec'd at
-      # all.
+      # Smoke-tested before it is published, not after, and on the architecture it was
+      # built for. An image that cannot start is not worth a tag, and both of these have
+      # failed to start for reasons no diff showed: a coturn flag removed upstream, and a
+      # capability the binary needs in order to be exec'd at all.
       - name: It starts under the hardening the quadlets apply
         run: |
           set -euo pipefail
-          image="${{ steps.tags.outputs.image }}:sha-${GITHUB_SHA::12}"
-          if [ "${{ matrix.name }}" = anothercrewlink-server ]; then
+          image="${{ steps.names.outputs.arch_tag }}"
+          if [ "${{ matrix.image.name }}" = anothercrewlink-server ]; then
             podman run -d --name smoke \
               --read-only --cap-drop=ALL --security-opt=no-new-privileges:true \
               -p 127.0.0.1:9736:9736 "$image"
@@ -128,16 +130,19 @@ jobs:
             grep -q "Black listing" smoke.log || { cat smoke.log; exit 1; }
             echo "coturn reached its peer deny list"
           fi
+          # And it is the architecture it claims to be. The Containerfiles used to pin
+          # single-architecture base digests, which made a build for the wrong target fail
+          # outright; they pin index digests now so that arm64 is possible at all, and this
+          # is what replaced that guarantee.
+          got=$(podman image inspect "$image" --format '{{.Architecture}}')
+          [ "$got" = "${{ matrix.arch.name }}" ] || { echo "built $got, expected ${{ matrix.arch.name }}"; exit 1; }
+          echo "architecture: $got"
           podman rm -f smoke > /dev/null
 
-      # Into the Docker-format credential file, not podman's own.
-      #
-      # `podman login` writes `$XDG_RUNTIME_DIR/containers/auth.json` by default, and the
-      # attestation action below looks for `~/.docker/config.json` -- so the first run of
-      # this workflow pushed both images successfully and then failed on its last step
-      # with "No credentials found for registry ghcr.io". The two files have the same
-      # format; only the path differs, and `--authfile` puts one login where both tools
-      # look.
+      # Into the Docker-format credential file, not podman's own. `podman login` writes
+      # `$XDG_RUNTIME_DIR/containers/auth.json`; the attestation action reads
+      # `~/.docker/config.json`. Same format, different path, and one `--authfile` puts a
+      # single login where both look.
       - name: Log in to the registry
         run: |
           mkdir -p "$HOME/.docker"
@@ -145,34 +150,86 @@ jobs:
             | podman login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin \
                 --authfile "$HOME/.docker/config.json"
 
-      - name: Push
+      - name: Push the per-architecture tag
+        run: |
+          podman push --authfile "$HOME/.docker/config.json" \
+            "${{ steps.names.outputs.arch_tag }}"
+
+  # ---------------------------------------------------------------------------------
+  # One manifest list per image, so a plain `podman pull` gets the right architecture.
+  # ---------------------------------------------------------------------------------
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+      # For the build provenance attestation below.
+      id-token: write
+      attestations: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [anothercrewlink-server, anothercrewlink-coturn]
+
+    steps:
+      - name: Names and tags
+        id: tags
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          image="${REGISTRY}/${owner}/${{ matrix.name }}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          # Every image is addressable by the commit that produced it, always. The moving
+          # tags are additional, never the only way back to a build.
+          tags="${image}:sha-${GITHUB_SHA::12}"
+          release_tag="${{ github.event.release.tag_name }}"
+          if [ -n "${release_tag}" ]; then
+            tags="${tags} ${image}:${release_tag} ${image}:latest"
+          else
+            tags="${tags} ${image}:edge"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "Publishing: ${tags}"
+
+      - name: Log in to the registry
+        run: |
+          mkdir -p "$HOME/.docker"
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | podman login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin \
+                --authfile "$HOME/.docker/config.json"
+
+      - name: Assemble and push the manifest list
         id: push
         run: |
-          # `--digestfile` reports the digest the registry actually stored, which is the
-          # only one worth attesting. Reading it back from `podman inspect .RepoDigests`
-          # gave a digest the registry answered 404 for: the local manifest and the pushed
-          # one need not be byte-identical, and an attestation is bound to one exact set
-          # of bytes.
-          for t in ${{ steps.tags.outputs.tags }}; do
-            podman push --authfile "$HOME/.docker/config.json" --digestfile digest.txt "$t"
+          set -euo pipefail
+          image="${{ steps.tags.outputs.image }}"
+          sha="sha-${GITHUB_SHA::12}"
+          podman manifest create "${image}:${sha}-list"
+          for arch in amd64 arm64; do
+            podman manifest add --authfile "$HOME/.docker/config.json" \
+              "${image}:${sha}-list" "docker://${image}:${sha}-${arch}"
           done
+          for t in ${{ steps.tags.outputs.tags }}; do
+            # `--all` pushes the per-architecture manifests the list refers to, not only
+            # the list. Without it a puller on one architecture is handed a reference to
+            # something the registry does not have under this tag.
+            podman manifest push --all --authfile "$HOME/.docker/config.json" \
+              --digestfile digest.txt "${image}:${sha}-list" "docker://${t}"
+          done
+          # The digest the registry stored, reported by the push rather than read back
+          # from a local record: an attestation is bound to one exact set of bytes, and a
+          # digest that is merely close is a 404.
           digest=$(cat digest.txt)
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          echo "Published ${{ steps.tags.outputs.image }}@${digest}"
-
-      # There was a step here that asked ghcr.io whether the digest resolved before
-      # attesting to it. It is gone, and its removal is the point: ghcr rejects Basic
-      # auth on the v2 manifest API, so the check answered 401 and failed two runs in a
-      # row over its own authentication while the push it was guarding had worked both
-      # times. A guard that fails more often than the thing it guards is not a guard.
-      #
-      # The attestation step below already fails loudly on a digest the registry does not
-      # have -- that is how the missing `--digestfile` was found in the first place.
+          echo "Published ${image}@${digest}"
 
       # Says which workflow, from which commit, built these exact bytes. Verifiable with
       # `gh attestation verify`, and consistent with the rest of this repository's supply
       # chain: the binary already carries its dependency list, and now the image carries
-      # its provenance.
+      # its provenance. Attached to the manifest list, so one attestation answers for
+      # both architectures.
       - name: Attest the build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -188,6 +245,8 @@ jobs:
             echo '```'
             echo "${{ steps.tags.outputs.image }}@${{ steps.push.outputs.digest }}"
             echo '```'
+            echo
+            echo "linux/amd64 + linux/arm64"
             echo
             for t in ${{ steps.tags.outputs.tags }}; do echo "- \`$t\`"; done
           } >> "$GITHUB_STEP_SUMMARY"
