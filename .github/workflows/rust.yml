@@ -134,8 +134,13 @@ jobs:
         run: |
           podman run -d --name turn-ci             --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1m             --cap-drop=ALL --cap-add=NET_BIND_SERVICE --security-opt=no-new-privileges:true             -e TURN_SECRET=ci-smoke-test -e TURN_EXTERNAL_IP=203.0.113.10             anothercrewlink-coturn:ci
           sleep 5
-          podman logs turn-ci
-          podman logs turn-ci 2>&1 | grep -q "Black listing"             || { echo "coturn did not reach its peer deny list"; exit 1; }
+          podman logs turn-ci > turn-ci.log 2>&1 || true
+          cat turn-ci.log
+          # Into a file rather than through `| grep -q`: grep exits on the first match,
+          # `logs` takes a SIGPIPE for it, and a shell with pipefail then reports a
+          # failure for a pattern that was found. That is not this step's shell today,
+          # and writing it the safe way costs nothing.
+          grep -q "Black listing" turn-ci.log             || { echo "coturn did not reach its peer deny list"; exit 1; }
           podman rm -f turn-ci > /dev/null
 
   deployment:

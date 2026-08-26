@@ -101,21 +101,33 @@ for _ in $(seq 1 40); do
     sleep 1
 done
 curl -fsS http://127.0.0.1:19736/health >/dev/null || { echo "server never became healthy"; $RUNTIME logs acl-t-server; exit 1; }
-# coturn gets its own wait, and it needs one. This used to be a single check run the
-# moment the *server* answered, which made it a race between two containers: locally the
-# server was the slower of the two and coturn had always finished, so it passed; on a CI
-# runner the server came up in three seconds and coturn had not yet printed its deny list.
-# A test that depends on which of two things starts first is not a test.
-for _ in $(seq 1 40); do
-    $RUNTIME logs acl-t-coturn 2>&1 | grep -q "Black listing" && break
-    sleep 1
-done
-$RUNTIME logs acl-t-coturn 2>&1 | grep -q "Black listing" || {
-    echo "coturn did not reach its peer deny list within 40s"
-    $RUNTIME logs acl-t-coturn
-    exit 1
+# coturn gets its own wait, and the check is written the awkward way on purpose.
+#
+# `$RUNTIME logs C | grep -q PATTERN` is the obvious form and it is a trap under
+# `set -o pipefail`: `grep -q` exits the moment it matches, `logs` is then killed by
+# SIGPIPE, and the pipeline reports failure for a pattern that was *found*. That produced
+# a CI failure whose own error handler printed a log containing the very line it had just
+# said was missing. It does not reproduce under Docker, which proxies `logs` through a
+# daemon and swallows the signal -- so the local run stayed green and only podman showed
+# it.
+#
+# Capturing to a file removes the pipe, and with it the whole question.
+coturn_ready() {
+    $RUNTIME logs acl-t-coturn > "$WORK/coturn.log" 2>&1 || true
+    grep -q "Black listing" "$WORK/coturn.log"
 }
 
+for _ in $(seq 1 40); do
+    if coturn_ready; then break; fi
+    sleep 1
+done
+if ! coturn_ready; then
+    echo "coturn did not reach its peer deny list within 40s"
+    echo "  container state: $($RUNTIME inspect acl-t-coturn --format '{{.State.Status}} exit={{.State.ExitCode}}' 2>&1)"
+    echo "  captured $(wc -c < "$WORK/coturn.log") bytes of log:"
+    cat "$WORK/coturn.log"
+    exit 1
+fi
 echo
 echo "== clients =="
 ISSUED=$(ACL_URL=http://127.0.0.1:19736 node tests/deployment.mjs)
