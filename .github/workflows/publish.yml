@@ -130,16 +130,26 @@ jobs:
           fi
           podman rm -f smoke > /dev/null
 
+      # Into the Docker-format credential file, not podman's own.
+      #
+      # `podman login` writes `$XDG_RUNTIME_DIR/containers/auth.json` by default, and the
+      # attestation action below looks for `~/.docker/config.json` -- so the first run of
+      # this workflow pushed both images successfully and then failed on its last step
+      # with "No credentials found for registry ghcr.io". The two files have the same
+      # format; only the path differs, and `--authfile` puts one login where both tools
+      # look.
       - name: Log in to the registry
         run: |
+          mkdir -p "$HOME/.docker"
           echo "${{ secrets.GITHUB_TOKEN }}" \
-            | podman login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin
+            | podman login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin \
+                --authfile "$HOME/.docker/config.json"
 
       - name: Push
         id: push
         run: |
           for t in ${{ steps.tags.outputs.tags }}; do
-            podman push "$t"
+            podman push --authfile "$HOME/.docker/config.json" "$t"
           done
           digest=$(podman inspect --format '{{index .RepoDigests 0}}' \
             "${{ steps.tags.outputs.image }}:sha-${GITHUB_SHA::12}" | cut -d@ -f2)
