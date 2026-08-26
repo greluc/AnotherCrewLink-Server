@@ -62,6 +62,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // password forever and each getting their own, and it is decided by whether one
         // environment variable is set.
         ephemeral_turn_credentials = peer_config.is_ephemeral(),
+        // The host clients are told to reach. Logged because the one time it was wrong it
+        // was a container id, and a line reporting only counts said nothing about that.
+        relay_host = peer_config.relay_host().unwrap_or("<none>"),
         "peer configuration loaded"
     );
 

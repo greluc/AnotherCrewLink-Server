@@ -37,7 +37,7 @@ pub enum Urls {
 #[serde(default)]
 pub struct RelaySettings {
     pub enabled: bool,
-    /// Falls back to the `HOSTNAME` environment variable when absent.
+    /// Falls back to `PUBLIC_HOSTNAME`, and then to `HOSTNAME`.
     pub host: Option<String>,
     /// Falls back to `TURN_PORT`, and then to 3478.
     ///
@@ -91,7 +91,13 @@ pub const DEFAULT_TURN_PORT: u16 = 3478;
 /// which `None` is which.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RelayEnvironment<'a> {
-    /// `HOSTNAME`. The relay's own `host` wins over it.
+    /// `PUBLIC_HOSTNAME`, then `HOSTNAME`. The relay's own `host` wins over both.
+    ///
+    /// **`HOSTNAME` alone is not safe to rely on in a container**, and this is not
+    /// theoretical: podman and docker both set it to the container id, so a deployment
+    /// whose environment file said `PUBLIC_HOSTNAME` advertised `turn:2cd620ec462e:3478`
+    /// to every client -- a name that resolves nowhere, handed out with no error on
+    /// either side. Hence the order, and hence the warning when the fallback is used.
     pub hostname: Option<&'a str>,
     /// `TURN_SECRET`. Its presence switches on per-client credentials.
     pub secret: Option<&'a str>,
@@ -113,8 +119,8 @@ pub struct EphemeralTurn {
 /// coturn's `use-auth-secret` scheme, which is the reason the relay no longer has to be
 /// configured twice.
 ///
-/// The username is an expiry timestamp, and the password is the HMAC of that username
-/// under a secret both sides hold. coturn recomputes it on arrival, so nothing has to be
+/// The username is an expiry timestamp and a client identifier, and the password is the
+/// HMAC of that username under a secret both sides hold. coturn recomputes it on arrival, so nothing has to be
 /// stored, synchronised or revoked — and this server never has to be told a password,
 /// because it derives the same one coturn will.
 ///
@@ -123,13 +129,24 @@ pub struct EphemeralTurn {
 /// weaknesses that retired SHA-1 for signatures do not apply, and HMAC-SHA1 has no
 /// practical break. If it ever gets one, coturn moving is the prerequisite, not us.
 #[must_use]
-pub fn turn_credentials(secret: &str, ttl: Duration, now: SystemTime) -> (String, String) {
+pub fn turn_credentials(
+    secret: &str,
+    ttl: Duration,
+    now: SystemTime,
+    client: &str,
+) -> (String, String) {
     let expiry = now
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .saturating_add(ttl)
         .as_secs();
-    let username = expiry.to_string();
+    // `<expiry>:<client>`, which is coturn's second accepted form. The bare `<expiry>`
+    // was here first and it is the same string for everybody who connects in the same
+    // second -- so a probe found two clients holding one credential, and the claim that
+    // each player got their own was simply untrue. coturn reads the timestamp up to the
+    // first colon and computes the HMAC over the whole username, so a suffix costs
+    // nothing and makes that claim true.
+    let username = format!("{expiry}:{client}");
 
     // `new_from_slice` only fails for key lengths HMAC cannot take, and HMAC takes every
     // length — long keys are hashed down. There is no error case to handle.
@@ -156,18 +173,22 @@ pub struct PeerConfigProvider {
 
 impl PeerConfigProvider {
     /// The configuration for a client connecting now.
+    ///
+    /// `client` goes into the TURN username, so two clients never hold the same
+    /// credential. The socket id is what the caller passes; anything stable and unique
+    /// for the connection would do.
     #[must_use]
-    pub fn issue(&self) -> ClientPeerConfig {
-        self.issue_at(SystemTime::now())
+    pub fn issue(&self, client: &str) -> ClientPeerConfig {
+        self.issue_at(SystemTime::now(), client)
     }
 
     /// The same, at a stated time, so the credential can be tested without waiting a day.
     #[must_use]
-    pub fn issue_at(&self, now: SystemTime) -> ClientPeerConfig {
+    pub fn issue_at(&self, now: SystemTime, client: &str) -> ClientPeerConfig {
         let Some(turn) = &self.ephemeral else {
             return self.base.clone();
         };
-        let (username, credential) = turn_credentials(&turn.secret, turn.ttl, now);
+        let (username, credential) = turn_credentials(&turn.secret, turn.ttl, now, client);
         let mut config = self.base.clone();
         // UDP first and TCP second, for the reason the static path gives below: a `turn:`
         // URL with no transport means UDP, and the networks that need a relay most are
@@ -199,6 +220,25 @@ impl PeerConfigProvider {
     #[must_use]
     pub fn is_ephemeral(&self) -> bool {
         self.ephemeral.is_some()
+    }
+
+    /// The host clients are told to reach the relay on, for the start-up log.
+    #[must_use]
+    pub fn relay_host(&self) -> Option<&str> {
+        self.ephemeral
+            .as_ref()
+            .map(|turn| turn.host.as_str())
+            .or_else(|| {
+                self.base
+                    .ice_servers
+                    .iter()
+                    .find_map(|server| match &server.urls {
+                        Urls::One(url) if url.starts_with("turn:") => url
+                            .strip_prefix("turn:")
+                            .and_then(|rest| rest.split(':').next()),
+                        _ => None,
+                    })
+            })
     }
 }
 
@@ -368,7 +408,24 @@ impl Settings {
         Self {
             bind: SocketAddr::new(host, port),
             name: std::env::var("NAME").ok().filter(|s| !s.is_empty()),
-            hostname: std::env::var("HOSTNAME").ok().filter(|s| !s.is_empty()),
+            // `PUBLIC_HOSTNAME` first. `HOSTNAME` remains a fallback for host installs
+            // that have set it for years, but it cannot be the primary: podman and docker
+            // set it to the container id, so in a container it is always present and
+            // always wrong.
+            hostname: std::env::var("PUBLIC_HOSTNAME")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    std::env::var("HOSTNAME")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .inspect(|name| {
+                            tracing::warn!(
+                                %name,
+                                "no PUBLIC_HOSTNAME, falling back to HOSTNAME -- in a container this is the container id and clients will be told to reach a name that resolves nowhere"
+                            );
+                        })
+                }),
             peer_config_path,
             public_address: std::env::var("ADDRESS")
                 .unwrap_or_else(|_| format!("http://127.0.0.1:{port}")),
@@ -431,7 +488,7 @@ mod ephemeral_turn_tests {
             ttl: DEFAULT_TURN_TTL,
             ..Default::default()
         })
-        .issue();
+        .issue("test-client");
         assert_eq!(
             config.ice_servers[1].urls,
             Urls::One("turn:turn.example.com:34780?transport=udp".to_owned())
@@ -458,7 +515,7 @@ mod ephemeral_turn_tests {
             ttl: DEFAULT_TURN_TTL,
             ..Default::default()
         })
-        .issue();
+        .issue("test-client");
         assert_eq!(
             config.ice_servers[1].urls,
             Urls::One("turn:turn.example.com:5000?transport=udp".to_owned())
@@ -481,7 +538,7 @@ mod ephemeral_turn_tests {
             ttl: DEFAULT_TURN_TTL,
             ..Default::default()
         })
-        .issue();
+        .issue("test-client");
         assert_eq!(
             config.ice_servers[1].urls,
             Urls::One(format!(
@@ -505,9 +562,9 @@ mod ephemeral_turn_tests {
         // which is the point of a vector: if it only ever agreed with the implementation
         // beside it, it would pass through any change to that implementation.
         let (username, credential) =
-            turn_credentials("s3cr3t", Duration::from_secs(3600), at(1_000_000));
-        assert_eq!(username, "1003600");
-        assert_eq!(credential, "CuWi1kXaddrfNv71pBp3HSPg7FU=");
+            turn_credentials("s3cr3t", Duration::from_secs(3600), at(1_000_000), "abc");
+        assert_eq!(username, "1003600:abc");
+        assert_eq!(credential, "mqFJ0nErRnJ740nClchV8RG42fo=");
     }
 
     #[test]
@@ -515,8 +572,8 @@ mod ephemeral_turn_tests {
         // The whole point of the scheme: nothing is shared between two players, so one
         // leaked credential expires instead of having to be rotated everywhere.
         let provider = ephemeral("s3cr3t", Duration::from_secs(3600));
-        let first = provider.issue_at(at(1_000_000));
-        let second = provider.issue_at(at(1_000_060));
+        let first = provider.issue_at(at(1_000_000), "socket-a");
+        let second = provider.issue_at(at(1_000_060), "socket-b");
         assert_ne!(first.ice_servers, second.ice_servers);
     }
 
@@ -524,7 +581,7 @@ mod ephemeral_turn_tests {
     fn the_relay_is_still_advertised_over_both_transports() {
         // The static path's reason applies unchanged: a `turn:` URL with no transport
         // means UDP, and the networks that need a relay most often block outbound UDP.
-        let config = ephemeral("s3cr3t", DEFAULT_TURN_TTL).issue_at(at(0));
+        let config = ephemeral("s3cr3t", DEFAULT_TURN_TTL).issue_at(at(0), "test-client");
         let urls: Vec<&Urls> = config.ice_servers.iter().map(|s| &s.urls).collect();
         assert_eq!(
             urls,
@@ -541,7 +598,7 @@ mod ephemeral_turn_tests {
         // One allocation, one credential. Two different ones would mean two HMACs and a
         // client that authenticates over UDP but not over TCP, which is the failure that
         // only shows up on the networks that fall back to TCP.
-        let config = ephemeral("s3cr3t", DEFAULT_TURN_TTL).issue_at(at(500));
+        let config = ephemeral("s3cr3t", DEFAULT_TURN_TTL).issue_at(at(500), "test-client");
         let turn: Vec<_> = config
             .ice_servers
             .iter()
@@ -554,9 +611,26 @@ mod ephemeral_turn_tests {
 
     #[test]
     fn the_username_is_an_expiry_in_the_future_and_the_ttl_decides_how_far() {
-        let issued = ephemeral("s3cr3t", Duration::from_secs(60)).issue_at(at(1_000));
+        // coturn reads the timestamp up to the first colon and ignores the rest, so the
+        // expiry has to stay the leading field however the suffix changes.
+        let issued = ephemeral("s3cr3t", Duration::from_secs(60)).issue_at(at(1_000), "socket-a");
         let username = issued.ice_servers[1].username.clone().unwrap();
-        assert_eq!(username.parse::<u64>().unwrap(), 1_060);
+        let (expiry, client) = username.split_once(':').expect("expiry, then client");
+        assert_eq!(expiry.parse::<u64>().unwrap(), 1_060);
+        assert_eq!(client, "socket-a");
+    }
+
+    #[test]
+    fn two_clients_in_the_same_second_get_different_credentials() {
+        // The property the probe against the live server disproved. With the expiry alone
+        // as the username, everybody who connected in the same second held one credential
+        // -- and "each player gets their own" was written down in several places while
+        // being false.
+        let provider = ephemeral("s3cr3t", DEFAULT_TURN_TTL);
+        let a = provider.issue_at(at(1_000), "socket-a");
+        let b = provider.issue_at(at(1_000), "socket-b");
+        assert_ne!(a.ice_servers[1].username, b.ice_servers[1].username);
+        assert_ne!(a.ice_servers[1].credential, b.ice_servers[1].credential);
     }
 
     #[test]
@@ -578,7 +652,7 @@ mod ephemeral_turn_tests {
             ..Default::default()
         });
         assert!(!provider.is_ephemeral());
-        let config = provider.issue();
+        let config = provider.issue("test-client");
         assert_eq!(config.ice_servers[1].username.as_deref(), Some("u"));
         assert_eq!(config.ice_servers[1].credential.as_deref(), Some("p"));
     }
@@ -612,7 +686,7 @@ mod ephemeral_turn_tests {
         let provider = ephemeral("s3cr3t", DEFAULT_TURN_TTL);
         assert_eq!(
             provider.advertised_count(),
-            provider.issue().ice_servers.len()
+            provider.issue("test-client").ice_servers.len()
         );
     }
 }
@@ -655,7 +729,7 @@ mod peer_config_tests {
                 ttl: DEFAULT_TURN_TTL,
                 ..Default::default()
             })
-            .issue();
+            .issue("test-client");
         let json = serde_json::to_string(&resolved).expect("serialises");
         assert_eq!(json, LIVE);
     }
@@ -682,7 +756,7 @@ mod peer_config_tests {
                 ttl: DEFAULT_TURN_TTL,
                 ..Default::default()
             })
-            .issue();
+            .issue("test-client");
         assert_eq!(resolved.ice_servers.len(), 3);
         assert!(matches!(
             &resolved.ice_servers[0].urls,
@@ -721,7 +795,7 @@ mod peer_config_tests {
                     ttl: DEFAULT_TURN_TTL,
                     ..Default::default()
                 })
-                .issue()
+                .issue("test-client")
                 .ice_servers
                 .len(),
             1
@@ -746,7 +820,7 @@ mod peer_config_tests {
                 ttl: DEFAULT_TURN_TTL,
                 ..Default::default()
             })
-            .issue();
+            .issue("test-client");
         assert!(resolved.ice_servers.iter().any(
             |server| matches!(&server.urls, Urls::One(url) if url == "turn:from-env.example:3478?transport=udp")
         ));
@@ -773,7 +847,7 @@ mod peer_config_tests {
                 ttl: DEFAULT_TURN_TTL,
                 ..Default::default()
             })
-            .issue();
+            .issue("test-client");
         assert_eq!(resolved.ice_servers.len(), 1, "only the STUN server");
     }
 
@@ -794,7 +868,7 @@ mod peer_config_tests {
                 ttl: DEFAULT_TURN_TTL,
                 ..Default::default()
             })
-            .issue();
+            .issue("test-client");
         assert_eq!(resolved.ice_servers.len(), 1);
     }
 
