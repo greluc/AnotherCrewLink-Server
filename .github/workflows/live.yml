@@ -93,20 +93,41 @@ jobs:
           EOF
           echo "allocating on ${host}:${port} as ${user}"
 
+          # The peer has to be a public address, and `-y` does not give one.
+          #
+          # `-y` tells the client to relay to its own address -- which inside a container
+          # is private, so our own peer deny list refuses the channel bind with 403. The
+          # first run of this step read that as "the relay is unreachable" when it was
+          # nothing of the sort: a 403 on the *channel bind* means the packets arrived,
+          # the credential was accepted and the allocation succeeded. Only the peer was
+          # refused, correctly, by us.
+          #
+          # So name the runner's public address instead. Nothing is listening on it, so no
+          # packet comes back and that is fine -- what is being asked is whether coturn
+          # will allocate and bind for a client on the far side of the internet.
+          public_ip=$(curl -fsS --max-time 10 https://api.ipify.org)
+          echo "peer: ${public_ip} (this runner, from outside the server's network)"
+
           # Pulled rather than built: this job is about a deployment, and waiting on a
-          # compile to ask a question about someone else's server is time spent for
+          # compile to ask a question about somebody else's server is time spent for
           # nothing.
           podman run --rm --entrypoint turnutils_uclient \
             ghcr.io/greluc/anothercrewlink-coturn:latest \
-            -u "$user" -w "$cred" -p "$port" -n 2 -y "$host" 2>&1 | tee uclient.log || true
+            -u "$user" -w "$cred" -p "$port" -n 2 -e "$public_ip" "$host" 2>&1 \
+            | tee uclient.log || true
 
-          # Relaying is the discriminator. coturn answers a refused credential with 401 and
-          # its own client then gives up with "Cannot complete Allocation", so matching on
-          # a status code is brittle; bytes moving through the relay are not.
+          # Classified rather than reduced to pass/fail, because the three ways this can
+          # go wrong are fixed by three different people.
           if grep -qiE "start_mclient|total transmit time" uclient.log; then
-            echo "the relay is reachable from outside and relayed with the issued credential"
+            echo "the relay allocated and bound for a client outside the network"
+          elif grep -qiE "401|unauthori[sz]ed|wrong credentials" uclient.log; then
+            echo "::error::${host}:${port} answered, but refused the credential the server issued -- TURN_SECRET differs between the two, or the port is forwarded to a different host than the one signalling points at"
+            exit 1
+          elif grep -qi "403" uclient.log; then
+            echo "::error::${host}:${port} allocated but refused ${public_ip} as a peer -- check --denied-peer-ip"
+            exit 1
           else
-            echo "::error::could not relay through ${host}:${port} from outside -- check the port forwarding for ${port} and the relay range"
+            echo "::error::no usable answer from ${host}:${port} -- check that UDP ${port} and the relay range are forwarded to this host"
             exit 1
           fi
 
