@@ -184,9 +184,13 @@ jobs:
           # Every image is addressable by the commit that produced it, always. The moving
           # tags are additional, never the only way back to a build.
           tags="${image}:sha-${GITHUB_SHA::12}"
+          # `v0.1.0` is the git convention and `0.1.0` is the image convention, so the
+          # prefix is stripped here rather than one of the two being bent. The image tag
+          # then matches the version in Cargo.toml exactly, which is what a runbook saying
+          # "we are on 0.1.0" needs it to do.
           release_tag="${{ github.event.release.tag_name }}"
           if [ -n "${release_tag}" ]; then
-            tags="${tags} ${image}:${release_tag} ${image}:latest"
+            tags="${tags} ${image}:${release_tag#v} ${image}:latest"
           else
             tags="${tags} ${image}:edge"
           fi
