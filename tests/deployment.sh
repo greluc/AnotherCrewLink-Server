@@ -17,6 +17,14 @@
 # Those are two different questions. A tree that builds a working pair says nothing about
 # whether the pair in the registry is the same pair, or is public, or exists.
 #
+# **What this does not cover, and it has already misled someone.** It writes its own
+# `peerConfig.toml` and its own environment, so it exercises the two images against each
+# other and never the configuration a deployment actually ships. A server delivered with
+# `[relay] enabled = false`, or with the relay host resolving to a container id, passes
+# here and fails for every player -- both of which happened. For a deployment's own
+# configuration the tool is `tests/live-probe.mjs`, which asks a running server what it
+# tells clients.
+#
 # Uses a bridge network with a fixed subnet rather than host networking, because coturn's
 # --external-ip has to be known before it starts and a pinned address is the only way to
 # know it. Host networking is what the quadlet uses in production and is checked there;

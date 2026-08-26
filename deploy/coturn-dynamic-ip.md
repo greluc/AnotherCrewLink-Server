@@ -95,13 +95,27 @@ relay and fall back to a direct connection, which on one LAN usually works anywa
 is a degradation rather than an outage, but worth knowing before diagnosing it as
 something else.
 
-### 6. The daily re-dial will drop calls in progress
+### 6. Signalling and the relay must be forwarded to the same host
+
+The credential a client presents is derived from `TURN_SECRET`, and coturn recomputes it
+from its own copy. If the reverse proxy already points at a new host while the router
+still forwards 3478 to the old one, the client is handed a credential the coturn it
+reaches was not built to accept.
+
+Both halves are up, both look healthy, and every relayed call fails. Nothing logs an
+error worth the name — coturn refuses an authentication, which is indistinguishable from
+a client with a stale credential.
+
+When moving the server, the proxy and the port forwarding have to move together, and the
+check afterwards is a real allocation from outside rather than either service's status.
+
+### 7. The daily re-dial will drop calls in progress
 
 Most residential lines are re-dialled every 24 hours and get a new address. The entrypoint
 then restarts coturn, which drops every allocation. Relayed calls reconnect; direct ones
 are untouched. If the line lets you choose the hour, choose one nobody plays in.
 
-### 7. Upstream bandwidth is the ceiling
+### 8. Upstream bandwidth is the ceiling
 
 Every relayed stream crosses the line twice, in and out again. Residential upstream is the
 constraint here, not CPU.
