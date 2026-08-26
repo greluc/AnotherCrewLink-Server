@@ -227,10 +227,13 @@ fn on_connect(socket: &SocketRef, state: &Arc<AppState>) {
         "socket connected"
     );
 
-    // `issue()` rather than a clone: with a shared TURN secret the credential carries an
-    // expiry, so it is minted for this client at this moment. One HMAC over ten bytes.
+    // Minted for this client at this moment: the credential carries an expiry, and the
+    // socket id goes into the username so no two clients hold the same one. It used to be
+    // the expiry alone, which everybody connecting in the same second shared -- a probe
+    // against the live server found exactly that. One HMAC over a couple of dozen bytes.
+    let sid = socket.id.to_string();
     if socket
-        .emit("clientPeerConfig", &state.peer_config.issue())
+        .emit("clientPeerConfig", &state.peer_config.issue(&sid))
         .is_err()
     {
         tracing::warn!(sid = %socket.id, "could not send the peer config");

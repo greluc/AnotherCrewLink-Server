@@ -1,0 +1,112 @@
+name: Live check
+
+# Asks a running deployment whether it works, from outside its own network.
+#
+# That last part is the whole reason this exists. Everything else can be checked from a
+# workstation, but the workstation this was written on shares a line with the server —
+# so every packet it sends to the relay takes the NAT hairpin, sees a private source
+# address, and proves nothing about the path a player takes. A GitHub runner is somewhere
+# else, which is the only property it needs to have.
+#
+# What it can therefore establish, and nothing else can:
+#
+#   * the signalling server is reachable over the public internet
+#   * the relay it advertises is a name that resolves from outside
+#   * the TURN port is forwarded and answering from outside
+#   * a credential the server issued is accepted for a real allocation
+#   * traffic actually relays through it
+#
+# Weekly and on demand, not on every push. Nothing here tests this repository's code —
+# it tests a deployment, which changes when somebody deploys, not when somebody commits.
+
+on:
+  schedule:
+    # Weekly, an hour offset from the other scheduled job so two failures do not arrive
+    # together and get read as one.
+    - cron: '41 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      url:
+        description: The server to check
+        required: false
+        default: https://aucl.greluc.me
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.x
+
+      - name: Install the socket.io client
+        run: npm ci
+
+      # The signalling half: connect, be told how to reach the relay, join, be told who
+      # else is there, exchange a signal, leave. Two sockets, a lobby code no game can
+      # produce, and nothing published to anybody's lobby browser.
+      - name: The signalling server, from outside
+        id: probe
+        run: |
+          set -o pipefail
+          url="${{ inputs.url || 'https://aucl.greluc.me' }}"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+          node tests/live-probe.mjs "$url" > relay.json
+          echo "relay offer: $(cat relay.json)"
+
+      # The relay half, and the part only a machine outside the server's network can do.
+      # coturn's own client, so the thing doing the asking did not come from this project,
+      # and `-y` so it allocates and relays rather than only binding.
+      - name: The relay it advertises, from outside
+        run: |
+          set -euo pipefail
+          if [ "$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(String(JSON.parse(s).relay===null)))' < relay.json)" = true ]; then
+            echo "::error::the server advertises no TURN relay, so there is nothing to reach from out here"
+            exit 1
+          fi
+          read -r host port user cred <<EOF
+          $(node -e '
+            let s = "";
+            process.stdin.on("data", (d) => (s += d)).on("end", () => {
+              const r = JSON.parse(s).relay;
+              const u = [].concat(r.urls)[0].replace(/^turns?:/, "").split("?")[0];
+              const [host, port] = u.split(":");
+              process.stdout.write([host, port || "3478", r.username, r.credential].join(" "));
+            });
+          ' < relay.json)
+          EOF
+          echo "allocating on ${host}:${port} as ${user}"
+
+          # Pulled rather than built: this job is about a deployment, and waiting on a
+          # compile to ask a question about someone else's server is time spent for
+          # nothing.
+          podman run --rm --entrypoint turnutils_uclient \
+            ghcr.io/greluc/anothercrewlink-coturn:latest \
+            -u "$user" -w "$cred" -p "$port" -n 2 -y "$host" 2>&1 | tee uclient.log || true
+
+          # Relaying is the discriminator. coturn answers a refused credential with 401 and
+          # its own client then gives up with "Cannot complete Allocation", so matching on
+          # a status code is brittle; bytes moving through the relay are not.
+          if grep -qiE "start_mclient|total transmit time" uclient.log; then
+            echo "the relay is reachable from outside and relayed with the issued credential"
+          else
+            echo "::error::could not relay through ${host}:${port} from outside -- check the port forwarding for ${port} and the relay range"
+            exit 1
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ steps.probe.outputs.url }}"
+            echo
+            echo "Checked from a GitHub runner, which is outside the server's own network —"
+            echo "the one thing a workstation on the same line cannot do."
+          } >> "$GITHUB_STEP_SUMMARY"
