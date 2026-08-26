@@ -12,9 +12,16 @@ After=network-online.target
 Wants=network-online.target
 
 [Container]
-Image=localhost/anothercrewlink-server:latest
+# Published by .github/workflows/publish.yml, so this host never builds anything.
+#
+# `AutoUpdate=registry` is inert unless `podman-auto-update.timer` is enabled, which it is
+# not by default. Enabling it means every published `:latest` reaches this server without
+# anyone deciding to -- fine for a lab, a poor idea for a relay people are talking
+# through. Pin a `:sha-...` tag or a digest instead if you want the decision to be
+# explicit; every build publishes one.
+Image=ghcr.io/greluc/anothercrewlink-server:latest
 ContainerName=acl-server
-AutoUpdate=local
+AutoUpdate=registry
 
 # Loopback, not 0.0.0.0. TLS terminates at the reverse proxy in front of this, so
 # publishing anywhere else would put a plaintext WebSocket endpoint on the internet.
