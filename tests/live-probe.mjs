@@ -17,39 +17,20 @@
 // only a client outside that network can answer. Run from the same line as the server,
 // every packet takes the NAT hairpin and proves nothing about the path a player takes.
 
-import { io } from 'socket.io-client';
+import { connectAll, harness, relayEntries, relayHost, settle } from './lib/acl-client.mjs';
+
+const { say, check, done } = harness();
 
 const URL = process.argv[2] ?? 'https://aucl.greluc.me';
 // Six characters is the shape of a real code, and digits are not in the alphabet Among Us
 // draws from — so this cannot collide with a lobby somebody is actually playing in.
 const LOBBY = 'PROBE0';
 
-// Everything a person reads goes to stderr, so stdout carries one machine-readable line
-// and nothing else. The live-check workflow feeds that line to a real TURN client.
-const say = (line) => process.stderr.write(`${line}
-`);
-let failed = 0;
-const check = (name, ok, detail = '') => {
-	if (!ok) failed++;
-	say(`${ok ? '  ok  ' : ' FAIL '} ${name}${detail ? ` — ${detail}` : ''}`);
-};
-const settle = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function connect() {
-	return new Promise((resolve, reject) => {
-		const socket = io(URL, { transports: ['websocket'], reconnection: false, timeout: 10000 });
-		const peerConfig = new Promise((got) => socket.once('clientPeerConfig', got));
-		socket.once('connect', () => resolve({ socket, peerConfig }));
-		socket.once('connect_error', reject);
-	});
-}
-
 const before = await fetch(`${URL}/health`).then((r) => r.json());
 say(`server: uptime ${Math.round(before.uptime)}s, ${before.connectionCount} connected, ${before.lobbiesCount} lobbies`);
 say(`probing as ${LOBBY}, two sockets, no lobby publication\n`);
 
-const a = await connect();
-const b = await connect();
+const [a, b] = await connectAll(URL, 2);
 check('two clients complete the websocket handshake', a.socket.connected && b.socket.connected);
 
 const [ca, cb] = await Promise.all([a.peerConfig, b.peerConfig]);
@@ -60,7 +41,7 @@ check('both are sent a clientPeerConfig', Array.isArray(ca?.iceServers) && Array
 // reports what it was given; it cannot make an allocation itself.
 let relayOffer = null;
 const stun = ca.iceServers.filter((s) => String(s.urls).startsWith('stun:'));
-const turn = ca.iceServers.filter((s) => String(s.urls).startsWith('turn:'));
+const turn = relayEntries(ca);
 say(`        advertised: ${ca.iceServers.map((s) => s.urls).join(', ')}`);
 say(`        forceRelayOnly: ${ca.forceRelayOnly}`);
 check('at least one STUN server is advertised', stun.length > 0);
@@ -81,7 +62,7 @@ if (turn.length > 0) {
 	// `turn:2cd620ec462e:3478` -- a container id, because the server read `HOSTNAME` and a
 	// container runtime sets that itself. Nothing errored; the relay was simply
 	// unreachable for everyone.
-	const host = String(ta.urls).replace(/^turns?:/, '').split(':')[0];
+	const host = relayHost(ta.urls);
 	const looksLikeAContainerId = /^[0-9a-f]{12}$/.test(host);
 	check(
 		'the relay host is a name, not a container id',
@@ -134,13 +115,10 @@ check(
 );
 check('and nothing was refused while it ran', after.counters.refusedSignals === before.counters.refusedSignals);
 
-say(`\n${failed === 0 ? 'all checks passed' : `${failed} check(s) failed`}`);
-// `process.exitCode` rather than `process.exit()`: exiting while socket.io is still
-// tearing its handles down trips a libuv assertion on Windows, after every check has
-// already run. Setting the code and letting the loop drain reports the same result
-// without the noise.
-// The one line on stdout, for a caller that can reach the relay from somewhere useful.
-process.stdout.write(`${JSON.stringify({ relay: relayOffer })}
-`);
+const failures = done();
 
-process.exitCode = failed === 0 ? 0 : 1;
+// The one line on stdout, for a caller that can reach the relay from somewhere useful.
+// Written whatever the checks said: a probe that found a misconfiguration still knows
+// where the relay is, and the caller may well want to try it anyway.
+process.stdout.write(`${JSON.stringify({ relay: relayOffer, failures })}
+`);
