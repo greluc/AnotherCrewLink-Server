@@ -8,15 +8,22 @@
 # because nothing that is not listed below can enter the context at all. Only the
 # example file is named, and it contains no credentials.
 #
-# The Node server's image is built from the repository root with its own context and is
-# unaffected by this file.
+# **Podman reads this file; Docker does not.** Docker only looks for `.dockerignore`, and
+# Podman falls back to that name only when this one is absent. That is not a problem for
+# the deployment, which is Podman -- but it is worth knowing before running a build with
+# something else and concluding from the result that the context filter works.
+#
+# It cost a CI failure once already. This file said `!docker` when the directory had been
+# renamed to `containers`, and the podman build stopped with "no items matching glob ...
+# (1 filtered out)". The local Docker build had passed, because after the rename Docker
+# could no longer find an ignore file at all and therefore filtered nothing.
 
 *
 
 !Cargo.toml
 !Cargo.lock
 !src
-!docker
+!containers
 !config/peerConfig.example.toml
 
 # rust-toolchain.toml is intentionally absent: the Dockerfile pins the toolchain by

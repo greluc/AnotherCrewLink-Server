@@ -25,6 +25,13 @@ TURN_PORT=3478
 SECRET="deployment-test-$$"
 
 command -v "$RUNTIME" >/dev/null || { echo "no $RUNTIME on PATH"; exit 1; }
+if [ "$RUNTIME" != podman ]; then
+    # Worth saying out loud, because it has already produced a green local run against a
+    # build CI then rejected: `.containerignore` is read by podman and not by docker, so
+    # under any other runtime the build context is unfiltered and an error in the
+    # allow-list cannot show up here.
+    echo "note: running with $RUNTIME, so .containerignore does not apply to the build"
+fi
 command -v node >/dev/null || { echo "no node on PATH"; exit 1; }
 
 cleanup() {
