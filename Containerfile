@@ -1,18 +1,21 @@
 # The AnotherCrewLink signalling server.
 #
-#     docker build -t anothercrewlink-server .
-#     docker run -p 127.0.0.1:9736:9736 -e HOSTNAME=your.host.name anothercrewlink-server
+#     podman build -t anothercrewlink-server .
+#     podman run -p 127.0.0.1:9736:9736 -e HOSTNAME=your.host.name anothercrewlink-server
 #
 # Publish to the host's loopback, not 0.0.0.0. TLS terminates at a reverse proxy, so
 # binding the container's port to a public interface would put a plaintext WebSocket
 # endpoint on the internet — the one thing this design must not do.
 #
+# In production this is not run by hand: `deploy/quadlet/` holds the systemd units Podman
+# generates the containers from, and they are the only supported deployment.
+#
 # Configuration is environment only: PORT, BIND, NAME, ADDRESS, HOSTNAME, PEER_CONFIG
 # and RUST_LOG, read with `std::env::var`. There is no dotfile loader in the binary, so
-# compose `environment:` or `--env-file` is the whole mechanism. The peer configuration
+# the quadlet's `EnvironmentFile=` is the whole mechanism. The peer configuration
 # is TOML; copy `config/peerConfig.example.toml` to `config/peerConfig.toml` and mount
-# it read-only. Its `relay` credentials must match TURN_USER / TURN_PASSWORD in `.env`,
-# which is what the coturn sidecar in docker-compose.yml reads.
+# it read-only. It no longer carries relay credentials: coturn and this server both derive
+# them from one `TURN_SECRET`, set in the environment file the quadlets read.
 #
 ##################################################################################
 # Builder
@@ -81,10 +84,10 @@ COPY src ./src
 RUN cargo auditable build --release --locked
 
 # The container health probe, compiled straight by rustc with no dependencies — see
-# docker/healthcheck.rs for why it is not a second bin target in the crate.
-COPY docker/healthcheck.rs ./docker/healthcheck.rs
+# containers/healthcheck.rs for why it is not a second bin target in the crate.
+COPY containers/healthcheck.rs ./containers/healthcheck.rs
 RUN rustc --edition 2024 -O -C panic=abort -C strip=symbols \
-        -o /build/acl-healthcheck docker/healthcheck.rs
+        -o /build/acl-healthcheck containers/healthcheck.rs
 
 # Both binaries are statically linked, because the host triple of the Alpine images is
 # `*-unknown-linux-musl` and musl targets link `crt-static` by default. That is a
@@ -107,7 +110,7 @@ FROM alpine:3.24.1@sha256:79ff19e9084a00eece421b2523fb93e22d730e2c0e525905de047e
 
 # Scratch discipline on an Alpine base: create the account, then delete the userland.
 # What survives is /etc (passwd, group), the empty system directories, and whatever is
-# copied in below — no shell, no busybox, no apk, no libc. `docker exec` into this
+# copied in below — no shell, no busybox, no apk, no libc. `podman exec` into this
 # container finds nothing to exec, and a payload that lands in it finds nothing to run.
 #
 # This is the last command in the image that needs a shell, and it has to be: busybox
@@ -123,14 +126,18 @@ RUN set -eu; \
     adduser -u 10001 -S -D -H -h /nonexistent -s /sbin/nologin -G acl acl; \
     rm -rf /media /mnt /opt /srv /home /root /var/cache/apk /etc/apk /usr /sbin /bin /lib
 
-# Standard OCI metadata, so `docker inspect` and any scanner that reads labels can say
+# Standard OCI metadata, so `podman inspect` and any scanner that reads labels can say
 # what this is and where it came from without a registry lookup.
-LABEL org.opencontainers.image.title="AnotherCrewLink signalling server"       org.opencontainers.image.description="Socket.IO signalling relay for AnotherCrewLink proximity voice chat"       org.opencontainers.image.source="https://github.com/greluc/AnotherCrewLink-Server"       org.opencontainers.image.licenses="GPL-3.0-or-later"       org.opencontainers.image.base.name="docker.io/library/alpine:3.24.1"
+LABEL org.opencontainers.image.title="AnotherCrewLink signalling server" \
+      org.opencontainers.image.description="Socket.IO signalling relay for AnotherCrewLink proximity voice chat" \
+      org.opencontainers.image.source="https://github.com/greluc/AnotherCrewLink-Server" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later" \
+      org.opencontainers.image.base.name="docker.io/library/alpine:3.24.1"
 
 COPY --from=builder /build/target/release/acl-server /app/acl-server
 COPY --from=builder /build/acl-healthcheck /app/acl-healthcheck
 
-# The example configuration ships so that an operator can `docker cp` it out of the
+# The example configuration ships so that an operator can `podman cp` it out of the
 # image — with no shell there is no other way to read it — and so that the mount point
 # exists whether or not a real config is mounted over it. With no `peerConfig.toml`
 # present the server logs that fact and serves its built-in STUN default, so the image
@@ -163,6 +170,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # No init shim. The server installs its own SIGTERM handler and closes the socket.io
 # namespaces before axum's graceful shutdown waits on connections, which is exactly what
-# PID 1 has to do; it spawns no children, so there is nothing to reap either. `docker
+# PID 1 has to do; it spawns no children, so there is nothing to reap either. `podman
 # stop` therefore ends in a clean shutdown rather than a ten-second timeout and SIGKILL.
 ENTRYPOINT ["/app/acl-server"]

@@ -1,8 +1,8 @@
 //! Configuration: the process environment, and the peer configuration file.
 //!
-//! There is no dotfile loader. Production supplies the environment through systemd's
-//! `EnvironmentFile=` or docker's `--env-file`, and `std::env::var` reads it, which is
-//! one dependency fewer in a server that is deliberately small.
+//! There is no dotfile loader. Production supplies the environment through the quadlet's
+//! `EnvironmentFile=`, and `std::env::var` reads it, which is one dependency fewer in a
+//! server that is deliberately small.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -33,27 +33,22 @@ pub enum Urls {
     Many(Vec<String>),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct RelaySettings {
     pub enabled: bool,
     /// Falls back to the `HOSTNAME` environment variable when absent.
     pub host: Option<String>,
-    pub port: u16,
+    /// Falls back to `TURN_PORT`, and then to 3478.
+    ///
+    /// `Option` rather than a defaulted `u16` so that "the file said 3478" and "the file
+    /// said nothing" are different states. They have to be: coturn's listening port comes
+    /// from `TURN_PORT` in the environment, and if an absent value here silently meant
+    /// 3478 then moving coturn to another port would leave every client being told the
+    /// old one -- a relay nobody can reach, with nothing logged on either side.
+    pub port: Option<u16>,
     pub username: String,
     pub credential: String,
-}
-
-impl Default for RelaySettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            host: None,
-            port: 3478,
-            username: String::new(),
-            credential: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +80,26 @@ impl Default for PeerConfigFile {
 /// session last before ICE needs to gather again". A player who leaves the client open
 /// overnight and starts a lobby in the morning must not find the relay refusing them.
 pub const DEFAULT_TURN_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The default TURN port, used when neither the peer config nor `TURN_PORT` says.
+pub const DEFAULT_TURN_PORT: u16 = 3478;
+
+/// What the relay advertisement takes from the process environment.
+///
+/// Grouped rather than passed as four positional arguments, because three of them are
+/// `Option` and a call site reading `resolve(None, None, x, None)` says nothing about
+/// which `None` is which.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RelayEnvironment<'a> {
+    /// `HOSTNAME`. The relay's own `host` wins over it.
+    pub hostname: Option<&'a str>,
+    /// `TURN_SECRET`. Its presence switches on per-client credentials.
+    pub secret: Option<&'a str>,
+    /// `TURN_PORT`, which is the port coturn is actually listening on.
+    pub port: Option<u16>,
+    /// `TURN_TTL_SECONDS`.
+    pub ttl: Duration,
+}
 
 /// A relay that issues a fresh credential per client instead of sharing one forever.
 #[derive(Debug, Clone)]
@@ -229,17 +244,21 @@ impl PeerConfigFile {
     /// in the file are ignored. Without it the file's static pair is used, exactly as
     /// before, because a deployment that has not moved to a shared secret must keep
     /// working across the upgrade.
-    pub fn resolve(
-        self,
-        hostname: Option<&str>,
-        turn_secret: Option<&str>,
-        turn_ttl: Duration,
-    ) -> PeerConfigProvider {
+    pub fn resolve(self, environment: RelayEnvironment<'_>) -> PeerConfigProvider {
+        // The port coturn listens on and the port clients are told have to be the same
+        // number. The file wins if it names one, because a deployment may put a proxy or a
+        // different external port in front; otherwise `TURN_PORT` -- the value coturn
+        // itself was started with -- is the answer, and only then the standard 3478.
+        let relay_port = self
+            .relay
+            .port
+            .or(environment.port)
+            .unwrap_or(DEFAULT_TURN_PORT);
         let relay_host = self
             .relay
             .host
             .clone()
-            .or_else(|| hostname.map(str::to_owned));
+            .or_else(|| environment.hostname.map(str::to_owned));
 
         let mut ice_servers = self.ice_servers;
         let mut ephemeral = None;
@@ -251,14 +270,14 @@ impl PeerConfigFile {
                         "relay.enabled is set but there is no relay.host and no HOSTNAME in the environment"
                     );
                 }
-                Some(host) if turn_secret.is_some_and(|secret| !secret.is_empty()) => {
+                Some(host) if environment.secret.is_some_and(|secret| !secret.is_empty()) => {
                     // Nothing is pushed here: the two entries are minted per connection,
                     // because the username is an expiry timestamp.
                     ephemeral = Some(EphemeralTurn {
                         host,
-                        port: self.relay.port,
-                        secret: turn_secret.unwrap_or_default().to_owned(),
-                        ttl: turn_ttl,
+                        port: relay_port,
+                        secret: environment.secret.unwrap_or_default().to_owned(),
+                        ttl: environment.ttl,
                     });
                     if !self.relay.username.is_empty() || !self.relay.credential.is_empty() {
                         tracing::warn!(
@@ -284,8 +303,7 @@ impl PeerConfigFile {
                     for transport in ["udp", "tcp"] {
                         ice_servers.push(IceServer {
                             urls: Urls::One(format!(
-                                "turn:{host}:{}?transport={transport}",
-                                self.relay.port
+                                "turn:{host}:{relay_port}?transport={transport}"
                             )),
                             username: Some(self.relay.username.clone()),
                             credential: Some(self.relay.credential.clone()),
@@ -323,6 +341,9 @@ pub struct Settings {
     pub turn_secret: Option<String>,
     /// How long an issued credential is good for.
     pub turn_ttl: Duration,
+    /// `TURN_PORT`: the port coturn was started on, and therefore the port clients have
+    /// to be told about unless the peer config names one explicitly.
+    pub turn_port: Option<u16>,
 }
 
 impl Settings {
@@ -356,6 +377,9 @@ impl Settings {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .map_or(DEFAULT_TURN_TTL, Duration::from_secs),
+            turn_port: std::env::var("TURN_PORT")
+                .ok()
+                .and_then(|value| value.parse().ok()),
         }
     }
 }
@@ -380,7 +404,90 @@ mod ephemeral_turn_tests {
             "#,
         )
         .expect("parses")
-        .resolve(None, Some(secret), ttl)
+        .resolve(RelayEnvironment {
+            secret: Some(secret),
+            ttl,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn the_advertised_port_follows_the_port_coturn_was_started_on() {
+        // The bug this exists for: `TURN_PORT` moves coturn, the peer config still says
+        // nothing, and clients keep being told 3478. A relay nobody can reach, and neither
+        // side logs anything, because both are doing exactly what they were configured to.
+        let config = toml::from_str::<PeerConfigFile>(
+            r#"
+            [relay]
+            enabled = true
+            host = "turn.example.com"
+            username = "u"
+            credential = "p"
+            "#,
+        )
+        .expect("parses")
+        .resolve(RelayEnvironment {
+            port: Some(34780),
+            ttl: DEFAULT_TURN_TTL,
+            ..Default::default()
+        })
+        .issue();
+        assert_eq!(
+            config.ice_servers[1].urls,
+            Urls::One("turn:turn.example.com:34780?transport=udp".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_port_in_the_file_still_wins_over_the_environment() {
+        // A deployment may put a different external port in front of coturn, and the file
+        // is where that is said. Explicit beats inherited.
+        let config = toml::from_str::<PeerConfigFile>(
+            r#"
+            [relay]
+            enabled = true
+            host = "turn.example.com"
+            port = 5000
+            username = "u"
+            credential = "p"
+            "#,
+        )
+        .expect("parses")
+        .resolve(RelayEnvironment {
+            port: Some(34780),
+            ttl: DEFAULT_TURN_TTL,
+            ..Default::default()
+        })
+        .issue();
+        assert_eq!(
+            config.ice_servers[1].urls,
+            Urls::One("turn:turn.example.com:5000?transport=udp".to_owned())
+        );
+    }
+
+    #[test]
+    fn with_neither_it_is_the_standard_port() {
+        let config = toml::from_str::<PeerConfigFile>(
+            r#"
+            [relay]
+            enabled = true
+            host = "turn.example.com"
+            username = "u"
+            credential = "p"
+            "#,
+        )
+        .expect("parses")
+        .resolve(RelayEnvironment {
+            ttl: DEFAULT_TURN_TTL,
+            ..Default::default()
+        })
+        .issue();
+        assert_eq!(
+            config.ice_servers[1].urls,
+            Urls::One(format!(
+                "turn:turn.example.com:{DEFAULT_TURN_PORT}?transport=udp"
+            ))
+        );
     }
 
     #[test]
@@ -466,7 +573,10 @@ mod ephemeral_turn_tests {
             "#,
         )
         .expect("parses")
-        .resolve(None, None, DEFAULT_TURN_TTL);
+        .resolve(RelayEnvironment {
+            ttl: DEFAULT_TURN_TTL,
+            ..Default::default()
+        });
         assert!(!provider.is_ephemeral());
         let config = provider.issue();
         assert_eq!(config.ice_servers[1].username.as_deref(), Some("u"));
@@ -487,7 +597,11 @@ mod ephemeral_turn_tests {
             "#,
         )
         .expect("parses")
-        .resolve(None, Some(""), DEFAULT_TURN_TTL);
+        .resolve(RelayEnvironment {
+            secret: Some(""),
+            ttl: DEFAULT_TURN_TTL,
+            ..Default::default()
+        });
         assert!(!provider.is_ephemeral());
     }
 
@@ -536,7 +650,12 @@ mod peer_config_tests {
             credential = "secret"
             "#,
         );
-        let resolved = config.resolve(None, None, DEFAULT_TURN_TTL).issue();
+        let resolved = config
+            .resolve(RelayEnvironment {
+                ttl: DEFAULT_TURN_TTL,
+                ..Default::default()
+            })
+            .issue();
         let json = serde_json::to_string(&resolved).expect("serialises");
         assert_eq!(json, LIVE);
     }
@@ -558,7 +677,12 @@ mod peer_config_tests {
             credential = "c"
             "#,
         );
-        let resolved = config.resolve(None, None, DEFAULT_TURN_TTL).issue();
+        let resolved = config
+            .resolve(RelayEnvironment {
+                ttl: DEFAULT_TURN_TTL,
+                ..Default::default()
+            })
+            .issue();
         assert_eq!(resolved.ice_servers.len(), 3);
         assert!(matches!(
             &resolved.ice_servers[0].urls,
@@ -593,7 +717,10 @@ mod peer_config_tests {
         );
         assert_eq!(
             config
-                .resolve(None, None, DEFAULT_TURN_TTL)
+                .resolve(RelayEnvironment {
+                    ttl: DEFAULT_TURN_TTL,
+                    ..Default::default()
+                })
                 .issue()
                 .ice_servers
                 .len(),
@@ -614,7 +741,11 @@ mod peer_config_tests {
             "#,
         );
         let resolved = config
-            .resolve(Some("from-env.example"), None, DEFAULT_TURN_TTL)
+            .resolve(RelayEnvironment {
+                hostname: Some("from-env.example"),
+                ttl: DEFAULT_TURN_TTL,
+                ..Default::default()
+            })
             .issue();
         assert!(resolved.ice_servers.iter().any(
             |server| matches!(&server.urls, Urls::One(url) if url == "turn:from-env.example:3478?transport=udp")
@@ -637,7 +768,12 @@ mod peer_config_tests {
             credential = "c"
             "#,
         );
-        let resolved = config.resolve(None, None, DEFAULT_TURN_TTL).issue();
+        let resolved = config
+            .resolve(RelayEnvironment {
+                ttl: DEFAULT_TURN_TTL,
+                ..Default::default()
+            })
+            .issue();
         assert_eq!(resolved.ice_servers.len(), 1, "only the STUN server");
     }
 
@@ -653,7 +789,11 @@ mod peer_config_tests {
         assert!(!config.relay.enabled);
         assert!(!config.force_relay_only);
         let resolved = config
-            .resolve(Some("example.com"), None, DEFAULT_TURN_TTL)
+            .resolve(RelayEnvironment {
+                hostname: Some("example.com"),
+                ttl: DEFAULT_TURN_TTL,
+                ..Default::default()
+            })
             .issue();
         assert_eq!(resolved.ice_servers.len(), 1);
     }

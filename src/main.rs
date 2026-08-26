@@ -19,7 +19,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::RequestBodyTimeoutLayer;
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 
-use crate::config::{PeerConfigFile, Settings};
+use crate::config::{PeerConfigFile, RelayEnvironment, Settings};
 use crate::state::AppState;
 
 /// A socket that stops reading fills this and its emits then fail, which is counted on
@@ -48,11 +48,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let settings = Settings::from_env();
-    let peer_config = PeerConfigFile::load(&settings.peer_config_path).resolve(
-        settings.hostname.as_deref(),
-        settings.turn_secret.as_deref(),
-        settings.turn_ttl,
-    );
+    let peer_config = PeerConfigFile::load(&settings.peer_config_path).resolve(RelayEnvironment {
+        hostname: settings.hostname.as_deref(),
+        secret: settings.turn_secret.as_deref(),
+        port: settings.turn_port,
+        ttl: settings.turn_ttl,
+    });
 
     tracing::info!(
         ice_servers = peer_config.advertised_count(),

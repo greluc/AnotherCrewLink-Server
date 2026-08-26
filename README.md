@@ -22,24 +22,25 @@ cargo build --release
 target/release/acl-server
 ```
 
-Or with Docker:
+Or as a container:
 
 ```bash
-docker build -t anothercrewlink-server .
-docker run -p 9736:9736 -e HOSTNAME=your.host.name anothercrewlink-server
+podman build -t anothercrewlink-server -f Containerfile .
+podman run -p 127.0.0.1:9736:9736 -e HOSTNAME=your.host.name anothercrewlink-server
 ```
 
 The image carries the binary, its healthcheck and the example configuration, and
 nothing else — no shell, no package manager. It runs as an unprivileged user.
 
-For a systemd host rather than a container, `deploy/` has the unit and a walkthrough:
+In production it is not run by hand: `deploy/quadlet/` holds the systemd units, and
+`deploy/` has the walkthrough:
 the service account, the directories, an nginx block that proxies both the HTTP routes
 and the WebSocket upgrade, and how to roll back.
 
 ### Environment
 
 There is no dotfile loader. Configuration comes from the process environment —
-systemd's `EnvironmentFile=` or docker's `--env-file`.
+the quadlet's `EnvironmentFile=`.
 
 | Variable | Meaning |
 | --- | --- |
@@ -121,19 +122,23 @@ Players behind a symmetric NAT cannot connect to each other directly, so a TURN 
 is what makes those pairs work. This server does not embed one: the relay it used to
 ship, node-turn, has been unmaintained since 2022.
 
-Use [coturn](https://github.com/coturn/coturn) instead. `docker-compose.yml` starts it
-alongside this server:
+Use [coturn](https://github.com/coturn/coturn) instead. It ships as the second container
+in `deploy/quadlet/`, and there is **one** thing to configure:
 
 ```bash
-cp .env.example .env          # set PUBLIC_HOSTNAME, PUBLIC_IP and TURN credentials
-cp config/peerConfig.example.toml config/peerConfig.toml
-# put the same credentials under [relay] in peerConfig.toml, and set enabled = true
-docker compose up -d
+openssl rand -base64 32     # this becomes TURN_SECRET in ~/.config/acl/acl.env
 ```
 
-coturn needs UDP 3478 and the relay port range (49152-65535 by default) reachable from
-the internet. Generate your own credentials; anything committed to a repository can be
-used by anyone to relay traffic at your expense.
+coturn takes that as `--static-auth-secret` and this server derives a time-limited
+credential per client from the same value, so there is no username or password to write
+down twice and no shared password handed to every player. Set `enabled = true` under
+`[relay]` in `peerConfig.toml`; the host and port come from the environment.
+
+coturn needs its listening port and its relay range reachable from the internet — the
+range defaults to 49160-49800 here rather than coturn's own 49152-65535, because every
+port in it has to be forwarded. See
+[deploy/coturn-dynamic-ip.md](deploy/coturn-dynamic-ip.md) for what the router, the line
+and DNS have to provide, including the case where the public address changes.
 
 Without a relay the server still works, and most players will still connect directly.
 

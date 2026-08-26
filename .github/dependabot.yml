@@ -29,7 +29,13 @@ updates:
       actions:
         patterns: ['*']
 
-  # Keeps the builder and runtime base images in the Dockerfile current.
+  # Keeps the builder and runtime base images current. The ecosystem is still called
+  # `docker` after the move to Podman -- that is Dependabot's name for OCI base images,
+  # not a runtime. **Unverified:** the file is now `Containerfile`, and whether Dependabot
+  # detects that name as reliably as `Dockerfile` has not been established here. Both
+  # images are digest-pinned, so nothing moves on its own either way; what would be lost
+  # is the pull request proposing a newer digest, and the CI build on every push still
+  # fails if a pinned base disappears.
   - package-ecosystem: docker
     directory: /
     schedule:
