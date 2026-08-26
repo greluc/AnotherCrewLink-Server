@@ -10,6 +10,11 @@ on:
   push:
     branches: ['**']
   pull_request:
+  schedule:
+    # Weekly. The `published` job below needs a trigger of its own: the images can stop
+    # being pullable without a commit -- a package flipped to private, a tag deleted --
+    # and nothing else here would notice.
+    - cron: '23 5 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -162,4 +167,37 @@ jobs:
         run: npm ci
 
       - name: Run the deployment verification
+        run: tests/deployment.sh
+
+  published:
+    # The same verification, against what is actually in the registry.
+    #
+    # A different question from the job above, and neither answers the other: that one
+    # asks whether this tree builds a working pair, this one asks whether the pair people
+    # would deploy is that pair -- and whether it is still pullable without credentials,
+    # which is a package setting nothing in this repository controls.
+    #
+    # Scheduled rather than per-push, because the images only change when the publish
+    # workflow runs, and it smoke-tests each one before pushing it.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.x
+
+      - name: Install the socket.io client
+        run: npm ci
+
+      # No login step, on purpose: an anonymous pull is the thing being checked. If the
+      # packages ever go private this job fails, which is the only warning anyone would
+      # get before a deployment could not fetch them either.
+      - name: Verify the published pair
+        env:
+          ACL_IMAGE_SERVER: ghcr.io/greluc/anothercrewlink-server:edge
+          ACL_IMAGE_COTURN: ghcr.io/greluc/anothercrewlink-coturn:edge
         run: tests/deployment.sh
