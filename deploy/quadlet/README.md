@@ -30,6 +30,13 @@ Every build also publishes a `:sha-<commit>` tag, so any image is addressable by
 commit that produced it and a rollback is a one-line edit rather than an archaeology
 exercise. Releases add `:<tag>` and move `:latest`.
 
+**Both are `linux/amd64` and `linux/arm64`**, so the same tag works on an x86 VM and on an
+Ampere or Raspberry Pi host; `podman pull` picks the right one. Each architecture is built
+on a runner of that architecture and started there before it is published — nothing is
+emulated, because an image checked under emulation has not been checked on the thing that
+will run it. There are also `:sha-<commit>-amd64` and `:sha-<commit>-arm64` tags if you
+ever need to name one directly.
+
 **Do not build on a small server.** A release build of this workspace with LTO wants more
 memory than a 2 GB VM comfortably has, and Buildah is what falls over rather than the
 compiler. That is why the registry exists.

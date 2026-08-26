@@ -104,7 +104,11 @@ jobs:
     # Built and run with **podman**, because that is the deployment runtime. Building with
     # one engine and deploying with another would leave the interesting failures for the
     # server to find.
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out Git repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -153,7 +157,15 @@ jobs:
     # accept a credential this server derived. That last step is the only way to find out
     # whether the two halves of the shared-secret scheme agree, because the answer lives
     # inside coturn.
-    runs-on: ubuntu-latest
+    #
+    # On both architectures, natively. The images are published for arm64 as well, and an
+    # arm64 image that has only ever been started -- never driven by a client, never asked
+    # to relay -- is an image nobody has actually tried.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out Git repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -180,7 +192,14 @@ jobs:
     # Scheduled rather than per-push, because the images only change when the publish
     # workflow runs, and it smoke-tests each one before pushing it.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    # Both architectures. A manifest list that resolves on amd64 says nothing about
+    # whether the arm64 entry it names is present and runnable, and that is precisely the
+    # half nobody would notice was broken.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out Git repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

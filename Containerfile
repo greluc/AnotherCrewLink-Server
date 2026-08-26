@@ -20,15 +20,18 @@
 ##################################################################################
 # Builder
 ##################################################################################
-FROM rust:1.98.0-alpine3.24@sha256:3ffeca71d0e4fc30f5537f76b7243e87ac99726b6d3d66591dfc5e497078b9fc AS builder
+FROM rust:1.98.0-alpine3.24@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce AS builder
 
 # Pinned three ways on purpose: the tag names the toolchain, the tag also names the
 # Alpine underneath it, and the digest names the exact bytes. A tag can be repointed by
-# whoever owns it; a digest cannot. Both digests name a *single-architecture* manifest
-# rather than a multi-arch index, which is what locks this to x86-64 -- a build on an
-# arm64 workstation fails outright instead of quietly producing an image no deployment
-# can run. An explicit `--platform` would do the same and buildkit warns about it, so the
-# digest carries the guarantee alone.
+# whoever owns it; a digest cannot.
+#
+# **These are index digests, not single-architecture ones**, and that changed when arm64
+# was added. They used to be per-architecture precisely so that a build on the wrong
+# machine failed instead of quietly producing an image no deployment could run. That
+# guarantee now comes from `--platform` in the publish workflow, which names the
+# architecture for every build rather than inheriting the builder's. A digest still pins
+# the bytes; it no longer pins the target.
 #
 # 1.98.0 is the current stable, released 2026-08-18 -- looked up rather than assumed. The
 # tag is the toolchain pin, so `rust-toolchain.toml` is deliberately *not* copied in: the
@@ -100,9 +103,9 @@ RUN rustc --edition 2024 -O -C panic=abort -C strip=symbols \
 ##################################################################################
 # Runtime
 ##################################################################################
-FROM alpine:3.24.1@sha256:79ff19e9084a00eece421b2523fb93e22d730e2c0e525905de047e848e56d95f
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
-# 3.24.1 is the current stable Alpine, and the digest is the amd64 one. Almost all of
+# 3.24.1 is the current stable Alpine, and the digest is the multi-architecture index. Almost all of
 # this base is deleted three lines further down, so the version matters less here than
 # in most images -- what survives is /etc and the directory skeleton. It is still
 # pinned, because `addgroup` and `adduser` run before the deletion and a repointed tag
