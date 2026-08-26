@@ -1,0 +1,170 @@
+name: Publish images
+
+# Publishes both container images to GitHub Container Registry, so the machine that runs
+# them never has to build them.
+#
+# That is not a convenience. A release build of this workspace with LTO wants more memory
+# than a small VM has, and the build tool is what falls over rather than the compiler —
+# `deploy/quadlet/README.md` says so in as many words. Before this existed the only way to
+# get an image onto a server was to build it elsewhere and move a tarball by hand.
+#
+# ghcr.io rather than Docker Hub because the workflow's own token can push to it: no
+# secret to configure, none to rotate, and none to leak.
+
+on:
+  push:
+    branches: [master]
+    # An image is only worth rebuilding when something that ends up inside one changed.
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Containerfile'
+      - 'containers/**'
+      - 'config/peerConfig.example.toml'
+      - '.containerignore'
+      - '.github/workflows/publish.yml'
+  # Releases are the other trigger, and deliberately a separate one. A `tags:` filter in
+  # the block above would be evaluated against the same `paths:` list, and a tag pushed
+  # onto an existing commit can present an empty diff -- so the release that most needs
+  # an image would be the one silently skipped.
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # To push to ghcr.io.
+      packages: write
+      # For the build provenance attestation below.
+      id-token: write
+      attestations: write
+
+    strategy:
+      # One image failing to publish must not hide the state of the other, and the two
+      # are independent artefacts with independent reasons to break.
+      fail-fast: false
+      matrix:
+        include:
+          - name: anothercrewlink-server
+            containerfile: Containerfile
+            context: .
+          - name: anothercrewlink-coturn
+            containerfile: containers/coturn/Containerfile
+            context: containers/coturn
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # podman, matching the deployment. Building with one engine and deploying with
+      # another leaves the interesting failures for the server to find, and this branch
+      # has already produced two of those.
+      - name: Work out the tags
+        id: tags
+        run: |
+          repo_owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          image="${REGISTRY}/${repo_owner}/${{ matrix.name }}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          # Every image is addressable by the commit that produced it, always. The moving
+          # tags are additional, never the only way back to a build.
+          tags="${image}:sha-${GITHUB_SHA::12}"
+          release_tag="${{ github.event.release.tag_name }}"
+          if [ -n "${release_tag}" ]; then
+            tags="${tags} ${image}:${release_tag} ${image}:latest"
+          else
+            tags="${tags} ${image}:edge"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "Publishing: ${tags}"
+
+      - name: Build
+        run: |
+          args=""
+          for t in ${{ steps.tags.outputs.tags }}; do args="$args -t $t"; done
+          # shellcheck disable=SC2086
+          podman build $args -f ${{ matrix.containerfile }} ${{ matrix.context }}
+
+      # Smoke-tested before it is published, not after. An image that cannot start is not
+      # worth a tag, and both of these have failed to start for reasons no diff showed:
+      # a coturn flag removed upstream, and a capability the binary needs to be exec'd at
+      # all.
+      - name: It starts under the hardening the quadlets apply
+        run: |
+          set -euo pipefail
+          image="${{ steps.tags.outputs.image }}:sha-${GITHUB_SHA::12}"
+          if [ "${{ matrix.name }}" = anothercrewlink-server ]; then
+            podman run -d --name smoke \
+              --read-only --cap-drop=ALL --security-opt=no-new-privileges:true \
+              -p 127.0.0.1:9736:9736 "$image"
+            for i in $(seq 1 30); do
+              curl -fsS http://127.0.0.1:9736/health > /dev/null && { echo "healthy after ${i}s"; break; }
+              sleep 1
+            done
+            curl -fsS http://127.0.0.1:9736/health
+          else
+            podman run -d --name smoke \
+              --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1m \
+              --cap-drop=ALL --cap-add=NET_BIND_SERVICE --security-opt=no-new-privileges:true \
+              -e TURN_SECRET=publish-smoke-test -e TURN_EXTERNAL_IP=203.0.113.10 "$image"
+            for _ in $(seq 1 30); do
+              podman logs smoke > smoke.log 2>&1 || true
+              grep -q "Black listing" smoke.log && break
+              sleep 1
+            done
+            # Into a file, never through `| grep -q`: grep exits on the first match, logs
+            # takes a SIGPIPE for it, and a pipefail shell then calls a found pattern a
+            # failure. That cost a red master once already.
+            grep -q "Black listing" smoke.log || { cat smoke.log; exit 1; }
+            echo "coturn reached its peer deny list"
+          fi
+          podman rm -f smoke > /dev/null
+
+      - name: Log in to the registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | podman login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin
+
+      - name: Push
+        id: push
+        run: |
+          for t in ${{ steps.tags.outputs.tags }}; do
+            podman push "$t"
+          done
+          digest=$(podman inspect --format '{{index .RepoDigests 0}}' \
+            "${{ steps.tags.outputs.image }}:sha-${GITHUB_SHA::12}" | cut -d@ -f2)
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Published ${{ steps.tags.outputs.image }}@${digest}"
+
+      # Says which workflow, from which commit, built these exact bytes. Verifiable with
+      # `gh attestation verify`, and consistent with the rest of this repository's supply
+      # chain: the binary already carries its dependency list, and now the image carries
+      # its provenance.
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.tags.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        run: |
+          {
+            echo "### ${{ matrix.name }}"
+            echo
+            echo '```'
+            echo "${{ steps.tags.outputs.image }}@${{ steps.push.outputs.digest }}"
+            echo '```'
+            echo
+            for t in ${{ steps.tags.outputs.tags }}; do echo "- \`$t\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"

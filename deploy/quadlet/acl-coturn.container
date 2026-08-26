@@ -10,9 +10,16 @@ After=network-online.target
 Wants=network-online.target
 
 [Container]
-Image=localhost/anothercrewlink-coturn:latest
+# Published by .github/workflows/publish.yml, so this host never builds anything.
+#
+# `AutoUpdate=registry` is inert unless `podman-auto-update.timer` is enabled, which it is
+# not by default. Enabling it means every published `:latest` reaches this server without
+# anyone deciding to -- fine for a lab, a poor idea for a relay people are talking
+# through. Pin a `:sha-...` tag or a digest instead if you want the decision to be
+# explicit; every build publishes one.
+Image=ghcr.io/greluc/anothercrewlink-coturn:latest
 ContainerName=acl-coturn
-AutoUpdate=local
+AutoUpdate=registry
 
 # **Host networking, and this is the reason the deployment is Podman.**
 #
