@@ -101,7 +101,20 @@ for _ in $(seq 1 40); do
     sleep 1
 done
 curl -fsS http://127.0.0.1:19736/health >/dev/null || { echo "server never became healthy"; $RUNTIME logs acl-t-server; exit 1; }
-$RUNTIME logs acl-t-coturn 2>&1 | grep -q "Black listing" || { echo "coturn did not start"; $RUNTIME logs acl-t-coturn; exit 1; }
+# coturn gets its own wait, and it needs one. This used to be a single check run the
+# moment the *server* answered, which made it a race between two containers: locally the
+# server was the slower of the two and coturn had always finished, so it passed; on a CI
+# runner the server came up in three seconds and coturn had not yet printed its deny list.
+# A test that depends on which of two things starts first is not a test.
+for _ in $(seq 1 40); do
+    $RUNTIME logs acl-t-coturn 2>&1 | grep -q "Black listing" && break
+    sleep 1
+done
+$RUNTIME logs acl-t-coturn 2>&1 | grep -q "Black listing" || {
+    echo "coturn did not reach its peer deny list within 40s"
+    $RUNTIME logs acl-t-coturn
+    exit 1
+}
 
 echo
 echo "== clients =="
