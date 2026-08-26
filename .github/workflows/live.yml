@@ -52,8 +52,15 @@ jobs:
       # The signalling half: connect, be told how to reach the relay, join, be told who
       # else is there, exchange a signal, leave. Two sockets, a lobby code no game can
       # produce, and nothing published to anybody's lobby browser.
+      #
+      # `continue-on-error`, and it is the point rather than laxity. The first run of this
+      # workflow stopped here on a misconfiguration -- two clients sharing a credential --
+      # and so never asked the question it exists to ask, which is whether the relay is
+      # reachable from out here at all. A check that prevents a later, more important
+      # check from running has cost more than it found.
       - name: The signalling server, from outside
         id: probe
+        continue-on-error: true
         run: |
           set -o pipefail
           url="${{ inputs.url || 'https://aucl.greluc.me' }}"
@@ -65,6 +72,8 @@ jobs:
       # coturn's own client, so the thing doing the asking did not come from this project,
       # and `-y` so it allocates and relays rather than only binding.
       - name: The relay it advertises, from outside
+        id: relay
+        continue-on-error: true
         run: |
           set -euo pipefail
           if [ "$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(String(JSON.parse(s).relay===null)))' < relay.json)" = true ]; then
@@ -101,12 +110,24 @@ jobs:
             exit 1
           fi
 
-      - name: Summary
-        if: always()
+      # Both answers, then the verdict. Reported separately because they fail for
+      # unrelated reasons and are fixed by different people: the first is the server's
+      # configuration, the second is a router.
+      - name: Verdict
         run: |
+          probe='${{ steps.probe.outcome }}'
+          relay='${{ steps.relay.outcome }}'
           {
             echo "### ${{ steps.probe.outputs.url }}"
             echo
-            echo "Checked from a GitHub runner, which is outside the server's own network —"
-            echo "the one thing a workstation on the same line cannot do."
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| signalling, from outside | ${probe} |"
+            echo "| relay reachable from outside | ${relay} |"
+            echo
+            echo "Checked from a GitHub runner, outside the server's own network — the one"
+            echo "thing a workstation sharing a line with the server cannot do."
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "signalling: ${probe}"
+          echo "relay:      ${relay}"
+          [ "${probe}" = success ] && [ "${relay}" = success ]

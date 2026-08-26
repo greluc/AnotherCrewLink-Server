@@ -9,36 +9,15 @@
 // Driven by tests/deployment.sh, which brings the containers up and runs the allocation.
 // Reads ACL_URL from the environment.
 
-import { io } from 'socket.io-client';
+import { connectAll, harness, relayEntries, settle } from './lib/acl-client.mjs';
+
+const { check, done } = harness();
 
 const URL = process.env.ACL_URL ?? 'http://127.0.0.1:9736';
 const LOBBY = 'DEPLOY';
 const CLIENTS = 5;
 
-const results = [];
-let failed = 0;
-
-function check(name, ok, detail = '') {
-	results.push({ name, ok, detail });
-	if (!ok) failed++;
-	process.stderr.write(`${ok ? '  ok  ' : ' FAIL '} ${name}${detail ? ` — ${detail}` : ''}\n`);
-}
-
-const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms));
-
-function connect() {
-	return new Promise((resolve, reject) => {
-		const socket = io(URL, { transports: ['websocket'], reconnection: false, timeout: 8000 });
-		const peerConfig = new Promise((got) => socket.once('clientPeerConfig', got));
-		socket.once('connect', () => resolve({ socket, peerConfig }));
-		socket.once('connect_error', reject);
-	});
-}
-
-const clients = [];
-for (let i = 0; i < CLIENTS; i++) {
-	clients.push(await connect());
-}
+const clients = await connectAll(URL, CLIENTS);
 check(`${CLIENTS} clients connect over websocket`, clients.every((c) => c.socket.connected));
 
 // Every one of them is told how to reach the relay. This is the part a single-client test
@@ -49,7 +28,7 @@ check(
 	configs.every((c) => Array.isArray(c?.iceServers) && c.iceServers.length > 0)
 );
 
-const turnEntries = configs.map((c) => c.iceServers.filter((s) => s.username));
+const turnEntries = configs.map(relayEntries);
 check(
 	'each client is given a TURN relay over both transports',
 	turnEntries.every((entries) => entries.length === 2),
@@ -152,5 +131,4 @@ process.stdout.write(
 
 for (const c of clients) c.socket.disconnect();
 
-process.stderr.write(`\n${results.length - failed}/${results.length} checks passed\n`);
-process.exit(failed === 0 ? 0 : 1);
+done();
