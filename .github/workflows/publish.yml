@@ -160,19 +160,14 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "Published ${{ steps.tags.outputs.image }}@${digest}"
 
-      # Before anything is attested to that digest, ask the registry whether it is really
-      # there. A 404 here is a push that did not land the way the next step assumes, and
-      # finding that out in a step of its own beats reading it out of an action.
-      - name: The registry has that digest
-        run: |
-          token=$(echo -n "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" | base64 -w0)
-          curl -fsSL -o /dev/null \
-            -H "Authorization: Basic ${token}" \
-            -H "Accept: application/vnd.oci.image.manifest.v1+json" \
-            -H "Accept: application/vnd.oci.image.index.v1+json" \
-            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-            "https://ghcr.io/v2/${{ github.repository_owner }}/${{ matrix.name }}/manifests/${{ steps.push.outputs.digest }}"
-          echo "present: ${{ steps.push.outputs.digest }}"
+      # There was a step here that asked ghcr.io whether the digest resolved before
+      # attesting to it. It is gone, and its removal is the point: ghcr rejects Basic
+      # auth on the v2 manifest API, so the check answered 401 and failed two runs in a
+      # row over its own authentication while the push it was guarding had worked both
+      # times. A guard that fails more often than the thing it guards is not a guard.
+      #
+      # The attestation step below already fails loudly on a digest the registry does not
+      # have -- that is how the missing `--digestfile` was found in the first place.
 
       # Says which workflow, from which commit, built these exact bytes. Verifiable with
       # `gh attestation verify`, and consistent with the rest of this repository's supply
