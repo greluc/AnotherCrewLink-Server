@@ -145,6 +145,42 @@ async function main() {
 	);
 	record('host_claimed_by_first_claimer', hosts.includes(101), hosts);
 
+	// --- the impostor radio, which is a 2.x event -------------------------------------
+	//
+	// Verified with the reference client for the reason this whole file exists: the shape
+	// is what the shipping clients will parse, and checking it against another copy of our
+	// own assumptions proves nothing. The Rust client's parser was written that way once
+	// and read `VAD` as two positional arguments the server has never sent.
+	//
+	// 1.x carries this claim over the WebRTC data channel and never touches the socket for
+	// it, so this event takes nothing away from it: a client that does not know the name
+	// neither sends it nor hears it.
+	const radioOn = waitFor(b, 'impostorRadio');
+	a.emit('impostorRadio', true);
+	const claimed = await radioOn;
+	record(
+		'impostor_radio_relayed_to_the_lobby',
+		claimed?.onRadio === true &&
+			claimed?.socketId === a.id &&
+			claimed?.client?.clientId === 101,
+		claimed,
+	);
+
+	// Releasing it has to arrive too. A radio that only ever switches on leaves an impostor
+	// broadcasting to the other impostors after they believe they have stopped.
+	const radioOff = waitFor(b, 'impostorRadio');
+	a.emit('impostorRadio', false);
+	const released = await radioOff;
+	record('impostor_radio_release_relayed', released?.onRadio === false, released);
+
+	// And it goes to the lobby rather than back to the claimant, like every other relayed
+	// event here: a client that heard its own claim would count itself as being on the air.
+	const echoed = waitFor(a, 'impostorRadio', 400);
+	a.emit('impostorRadio', true);
+	record('impostor_radio_not_echoed_to_the_sender', (await echoed) === null);
+	a.emit('impostorRadio', false);
+	await wait(200);
+
 	// --- the signal envelope --------------------------------------------------------
 	const relayedSoon = waitFor(b, 'signal');
 	a.emit('signal', { to: b.id, data: { type: 'offer', sdp: 'v=0 probe' } });

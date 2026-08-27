@@ -30,7 +30,7 @@ use socketioxide::socket::Sid;
 
 use crate::state::{
     AppState, BrowserEvent, Bucket, Client, GAME_STATE_LOBBY, JOIN_RATE, LOBBY_RATE, Limits,
-    Membership, PublicLobbyInput, SIGNAL_RATE, VAD_RATE,
+    Membership, PublicLobbyInput, RADIO_RATE, SIGNAL_RATE, VAD_RATE,
 };
 
 /// The room used for the lobby browser. This one is a socketioxide room on purpose: it
@@ -211,6 +211,7 @@ fn admit(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
     on_id(socket, io, state);
     on_leave(socket, io, state);
     on_vad(socket, io, state);
+    on_impostor_radio(socket, io, state);
     on_join_lobby(socket, state);
     on_lobby(socket, io, state);
     on_remove_lobby(socket, io, state);
@@ -480,6 +481,56 @@ fn on_leave(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
             leave_room(&io, &state, sid, code.as_ref()).await;
         }
     });
+}
+
+/// The impostor radio, relayed to the rest of the lobby.
+///
+/// **A 2.x event.** 1.x carries this over the WebRTC data channel and never sends or
+/// receives it here, so adding it takes nothing away from anybody: a mixed lobby degrades
+/// exactly as far as it did before, and a lobby of 2.x clients gets a radio that works.
+///
+/// Deliberately the same shape as `VAD` -- one peer, one boolean, relayed to the lobby --
+/// because it is the same kind of message, and two shapes would be two parsers to keep in
+/// step for no reason.
+///
+/// **This server does not decide who may claim it.** Being an impostor is a fact about the
+/// game, which this server has never read and must not start reading: it would have to be
+/// told, and a client that can tell it is a client that can lie to it. Both ends check
+/// instead -- the sender before claiming, the receiver before lifting any distance rule --
+/// so a lie is believed by nobody. Relaying it is all that is safe to do here, and all that
+/// is needed.
+fn on_impostor_radio(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
+    let io = io.clone();
+    let state = state.clone();
+    socket.on(
+        "impostorRadio",
+        async move |socket: SocketRef, TryData(on_radio): TryData<bool>| {
+            let Ok(on_radio) = on_radio else { return };
+            let sid = socket.id;
+            if !within_limit(&state, sid, |l| &mut l.radio, RADIO_RATE) {
+                return;
+            }
+            let Some((code, client)) = state
+                .members
+                .get(&sid)
+                .and_then(|member| member.code.clone().zip(member.client))
+            else {
+                return;
+            };
+
+            let payload = serde_json::json!({
+                "onRadio": on_radio,
+                "client": client,
+                "socketId": sid.to_string(),
+            });
+            let Some(rendered) = render(&payload) else {
+                return;
+            };
+            for peer in state.peers_in(&code, sid) {
+                deliver(&io, &state, peer, "impostorRadio", &*rendered);
+            }
+        },
+    );
 }
 
 fn on_vad(socket: &SocketRef, io: &SocketIo, state: &Arc<AppState>) {
