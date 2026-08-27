@@ -209,6 +209,13 @@ impl Bucket {
 /// Over the limit the event is dropped and counted, not answered with a disconnect: a
 /// client that stutters past a burst must not lose its call over it.
 pub const VAD_RATE: (f64, f64) = (20.0, 40.0);
+
+/// The impostor radio, which is held rather than tapped.
+///
+/// A client sends one message when the key goes down and one when it comes up, so the
+/// honest rate is far below `VAD`'s -- but somebody drumming the key must not be able to
+/// flood a lobby, and a burst covers the ordinary case of a few quick presses.
+pub const RADIO_RATE: (f64, f64) = (5.0, 15.0);
 pub const LOBBY_RATE: (f64, f64) = (2.0, 10.0);
 pub const SIGNAL_RATE: (f64, f64) = (50.0, 100.0);
 pub const JOIN_RATE: (f64, f64) = (2.0, 5.0);
@@ -216,6 +223,7 @@ pub const JOIN_RATE: (f64, f64) = (2.0, 5.0);
 #[derive(Debug, Clone)]
 pub struct Limits {
     pub vad: Bucket,
+    pub radio: Bucket,
     pub lobby: Bucket,
     pub signal: Bucket,
     pub join: Bucket,
@@ -226,6 +234,7 @@ impl Limits {
     pub fn new(now: Instant) -> Self {
         Self {
             vad: Bucket::new(VAD_RATE.1, now),
+            radio: Bucket::new(RADIO_RATE.1, now),
             lobby: Bucket::new(LOBBY_RATE.1, now),
             signal: Bucket::new(SIGNAL_RATE.1, now),
             join: Bucket::new(JOIN_RATE.1, now),
