@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="AnotherCrewLink Server" width="96">
+</p>
+
 # AnotherCrewLink Server
 
 Voice relay and signalling server for [AnotherCrewLink](https://github.com/greluc/AnotherCrewLink).

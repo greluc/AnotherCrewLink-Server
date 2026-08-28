@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="AnotherCrewLink">
+<g fill="none" stroke="#ba68c8" stroke-linecap="round" stroke-width="10">
+<circle cx="128" cy="128" r="34" fill="#ba68c8" stroke="none"></circle>
+<path d="M128 54a74 74 0 0 1 0 148" opacity=".85"></path>
+<path d="M128 14a114 114 0 0 1 0 228" opacity=".35"></path>
+</g>
+</svg>
