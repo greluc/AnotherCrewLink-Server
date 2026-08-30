@@ -34,6 +34,10 @@ PORT="${TURN_PORT:-3478}"
 MIN_PORT="${TURN_MIN_PORT:-49160}"
 MAX_PORT="${TURN_MAX_PORT:-49800}"
 REALM="${TURN_REALM:-${PUBLIC_HOSTNAME:-anothercrewlink}}"
+# The internal address the public one maps to. Set only to allow relay-to-relay; it opens
+# that address to relay users. Unset means the mapping, and the opening, do not happen.
+# See the comment on run_coturn.
+INTERNAL_IP="${TURN_INTERNAL_IP:-}"
 coturn_pid=""
 
 log() { printf '%s external-ip: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"; }
@@ -55,19 +59,27 @@ fi
 # `/tmp` is the writable tmpfs this container already has, `umask 077` keeps the file to
 # coturn's own user, and argv now carries only the path.
 #
-# **`--allowed-peer-ip` for the relay's own address.** coturn refuses, by default, to open
-# a permission to its own `--external-ip`, and answers CreatePermission for it with 403.
-# That is loop and SSRF protection and is right in general -- but it also makes relay-to-relay
-# impossible: when both WebRTC peers are relay-only, their two relay candidates are this one
-# address, and each side needs a permission for the other's. Allowing exactly this address
-# back is safe *here*, and only because it was checked -- the only things reachable at it are
-# coturn itself, which is authenticated, and the ports the router already forwards publicly;
-# the signalling server sits on the private island and trusts no source address; and every
-# private range below stays denied, so nothing internal becomes reachable. It is the
-# discovered address, so it follows `--external-ip` across a re-dial with no second place to
-# keep in step. Precedence is coturn's own: an address that is both allowed and denied is
-# allowed, and a non-denied peer stays allowed -- this adds one exception, it is not a
-# whitelist.
+# **`--external-ip=<public>/<internal>` when a relay-to-relay call has to work.** coturn
+# refuses, by default, to open a permission to its own external address and answers
+# CreatePermission for it with 403 -- but the block is subtler than a self-check, and an
+# earlier fix that whitelisted the *public* address with `--allowed-peer-ip` did nothing for
+# exactly that reason. With `--external-ip=<public>` alone, coturn maps the public address to
+# the internal relay address at start-up, and a permission for the public one is checked
+# against the *mapped internal* address -- which is private, and denied by the ranges below.
+# So relay-to-relay is impossible: when both WebRTC peers are relay-only -- the normal case
+# once the client forces relay on both ends, and the only case when `force_relay_only` is
+# set, which the client cannot undo -- their two relay candidates are this one address, and
+# each needs a permission for the other's.
+#
+# The `<public>/<internal>` form fixes it: coturn maps *and* whitelists the internal address,
+# so the mapped permission passes. `TURN_INTERNAL_IP` supplies the internal one, and it is
+# opt-in for a reason -- whitelisting that address opens it to relay users. The cost is
+# bounded but real and has to be checked per host: the relay hands out UDP allocations only
+# (no RFC 6062 TCP), so only what listens on *UDP* at that address becomes reachable, and on
+# this project's deployment that is coturn itself (3478, authenticated) once LLMNR is off.
+# Only the one named address is whitelisted, never a range, so the private ranges below stay
+# denied and the signalling server on its own private island stays unreachable. Leave
+# `TURN_INTERNAL_IP` unset and none of this -- the mapping or the opening -- happens.
 #
 # The deny list is the reason a public TURN server is not an open proxy into the loopback
 # and private ranges of the host it runs on. Removing an entry is how TURN servers end up
@@ -87,10 +99,16 @@ run_coturn() {
     shift
     # Keep the shared secret out of argv (see above). A subshell so the umask is local.
     ( umask 077; printf 'static-auth-secret=%s\n' "${TURN_SECRET}" > /tmp/turnserver.conf )
+    # The public address alone, or public/internal when TURN_INTERNAL_IP opts in to
+    # relay-to-relay -- see the comment above for what that opens.
+    if [ -n "${INTERNAL_IP}" ]; then
+        external_ip="${external}/${INTERNAL_IP}"
+    else
+        external_ip="${external}"
+    fi
     turnserver \
         -c /tmp/turnserver.conf \
-        --external-ip="${external}" \
-        --allowed-peer-ip="${external}" \
+        --external-ip="${external_ip}" \
         --listening-port="${PORT}" \
         --min-port="${MIN_PORT}" \
         --max-port="${MAX_PORT}" \
@@ -199,7 +217,11 @@ ip=$(current_ip) || {
     exit 1
 }
 
-log "starting on port ${PORT}, relay ${MIN_PORT}-${MAX_PORT}, external ${ip}"
+if [ -n "$INTERNAL_IP" ]; then
+    log "starting on port ${PORT}, relay ${MIN_PORT}-${MAX_PORT}, external ${ip} mapped to ${INTERNAL_IP} (relay-to-relay on, ${INTERNAL_IP} reachable to relay users over UDP)"
+else
+    log "starting on port ${PORT}, relay ${MIN_PORT}-${MAX_PORT}, external ${ip}"
+fi
 run_coturn "$ip" "$@"
 
 # A fixed address needs no polling; the loop would only burn requests at three strangers'
