@@ -76,9 +76,8 @@ mkdir -p "$WORK/config"
 cat > "$WORK/config/peerConfig.toml" <<TOML
 force_relay_only = false
 
-[[ice_servers]]
-urls = "stun:stun.l.google.com:19302"
-
+# No [[ice_servers]] on purpose: the STUN entry is derived from the relay's own host, so
+# leaving this out means the run exercises that derivation instead of only the TURN URLs.
 [relay]
 enabled = true
 TOML

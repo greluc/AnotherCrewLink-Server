@@ -106,9 +106,10 @@ there is one of it and not two.
 the maintained Rust YAML crates depend on an archived machine translation of libyaml,
 and this file is a handful of URL/username/credential fields.
 
-A missing file is not an error — the server logs it and serves the built-in default (one
-Google STUN server, no relay). A *malformed* file is also not an error: it is logged and
-the default is served. That is deliberate and matches the Node server, but it means a
+A missing file is not an error — the server logs it and serves the built-in default,
+which advertises nothing at all: no relay, and no STUN server either, because the STUN
+entry is derived from the relay's host and there is no relay to derive it from. A
+*malformed* file is also not an error: it is logged and the default is served. That is deliberate and matches the Node server, but it means a
 broken peer config presents as "TURN stopped working" rather than as a failed start.
 Check the journal after editing it:
 

@@ -9,9 +9,26 @@
 # Hides players' IP addresses from each other, at the cost of the relay's bandwidth.
 force_relay_only = false
 
-# STUN servers let a client discover its own public address. These are advertised as-is.
-[[ice_servers]]
-urls = "stun:stun.l.google.com:19302"
+# STUN — a client discovering its own public address — needs no entry here.
+#
+# When the relay below is enabled, `stun:<its host>:<its port>` is advertised alongside
+# it automatically. A TURN server has to answer plain Binding requests (RFC 8656 §3.1),
+# so the relay already is this deployment's STUN server and there is nothing else to run.
+#
+# This used to default to Google's public server. It no longer does, for two reasons:
+# every player of every deployment revealed their address to a third party before saying
+# a word, and that server rate-limits — measured from one network it answered once and
+# then refused eight times running, while the same request from a datacentre always
+# succeeded. Neither is a good thing to have in the path of a lobby.
+#
+# Extra servers can still be listed, and are advertised exactly as written, before the
+# derived ones. Add one only if you have a reason to:
+#
+#   [[ice_servers]]
+#   urls = "stun:stun.example.com:3478"
+#
+# With no relay and no entry here, clients are told about no ICE servers at all and will
+# only reach players on their own network. The server logs a warning when that happens.
 
 # The TURN relay is a separate container — see deploy/quadlet/ — and this only tells
 # clients how to reach it. It is advertised twice, over UDP and over TCP: a `turn:` URL
@@ -27,7 +44,8 @@ urls = "stun:stun.l.google.com:19302"
 # says so at start-up. They remain for deployments that have not moved yet.
 [relay]
 enabled = false
-# Defaults to the HOSTNAME environment variable when omitted.
+# Defaults to the HOSTNAME environment variable when omitted. It is also the host the
+# advertised STUN entry is built from, so it has to be a name clients can resolve.
 # host = "turn.example.com"
 port = 3478
 username = ""
