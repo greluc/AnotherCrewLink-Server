@@ -49,6 +49,26 @@ fi
 # expanding a list through command substitution would split TURN_SECRET on whitespace,
 # and a secret that silently loses half of itself authenticates nobody.
 #
+# **The secret goes in a file, not on the command line.** `--static-auth-secret` on argv
+# leaves the shared secret where anyone who can read the host's process list -- `ps`,
+# `podman top` -- reads it back verbatim. coturn takes it from a config file just as well;
+# `/tmp` is the writable tmpfs this container already has, `umask 077` keeps the file to
+# coturn's own user, and argv now carries only the path.
+#
+# **`--allowed-peer-ip` for the relay's own address.** coturn refuses, by default, to open
+# a permission to its own `--external-ip`, and answers CreatePermission for it with 403.
+# That is loop and SSRF protection and is right in general -- but it also makes relay-to-relay
+# impossible: when both WebRTC peers are relay-only, their two relay candidates are this one
+# address, and each side needs a permission for the other's. Allowing exactly this address
+# back is safe *here*, and only because it was checked -- the only things reachable at it are
+# coturn itself, which is authenticated, and the ports the router already forwards publicly;
+# the signalling server sits on the private island and trusts no source address; and every
+# private range below stays denied, so nothing internal becomes reachable. It is the
+# discovered address, so it follows `--external-ip` across a re-dial with no second place to
+# keep in step. Precedence is coturn's own: an address that is both allowed and denied is
+# allowed, and a non-denied peer stays allowed -- this adds one exception, it is not a
+# whitelist.
+#
 # The deny list is the reason a public TURN server is not an open proxy into the loopback
 # and private ranges of the host it runs on. Removing an entry is how TURN servers end up
 # in other people's incident reports.
@@ -65,14 +85,17 @@ fi
 run_coturn() {
     external="$1"
     shift
+    # Keep the shared secret out of argv (see above). A subshell so the umask is local.
+    ( umask 077; printf 'static-auth-secret=%s\n' "${TURN_SECRET}" > /tmp/turnserver.conf )
     turnserver \
+        -c /tmp/turnserver.conf \
         --external-ip="${external}" \
+        --allowed-peer-ip="${external}" \
         --listening-port="${PORT}" \
         --min-port="${MIN_PORT}" \
         --max-port="${MAX_PORT}" \
         --realm="${REALM}" \
         --use-auth-secret \
-        --static-auth-secret="${TURN_SECRET}" \
         --fingerprint \
         --no-multicast-peers \
         --denied-peer-ip=0.0.0.0-0.255.255.255 \
@@ -110,7 +133,22 @@ plausible() {
     return 0
 }
 
-discover() {
+# busybox wget spawns an ssl_client helper for HTTPS, and when its -T timeout fires on a
+# stalled handshake it does not always take the helper with it: the ssl_client is left
+# blocked on a socket read, reparented to this script as pid 1, and there it stays for
+# ever -- twenty had piled up on the running relay. Discovery is synchronous, so once a
+# `_discover` call has returned no wget of ours is running and every ssl_client still alive
+# is one of those orphans. `discover` reaps them on the way out, so no call site has to.
+reap_tls_helpers() {
+    for proc in /proc/[0-9]*; do
+        if [ "$(cat "$proc/comm" 2>/dev/null)" = ssl_client ]; then
+            kill "${proc#/proc/}" 2>/dev/null || true
+        fi
+    done
+    return 0
+}
+
+_discover() {
     # busybox wget rather than curl: it is already in the base image, and one fewer package
     # is one fewer thing to patch in a container that faces the internet.
     for url in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
@@ -121,6 +159,13 @@ discover() {
         fi
     done
     return 1
+}
+
+discover() {
+    _discover
+    _rc=$?
+    reap_tls_helpers
+    return "${_rc}"
 }
 
 current_ip() {
