@@ -60,7 +60,11 @@ the quadlet's `EnvironmentFile=`.
 
 Copy `config/peerConfig.example.toml` to `config/peerConfig.toml`. It controls whether
 connections are forced through a relay, which TURN relay clients are told about, and
-any extra STUN/TURN servers.
+any extra STUN/TURN servers beyond it.
+
+Clients are told about the relay's own host as a STUN server automatically, because a
+TURN server answers plain Binding requests as well. No public STUN server is configured
+and none is contacted.
 
 It is TOML rather than YAML because the maintained YAML crates for Rust depend on an
 archived machine translation of libyaml, and the file is a handful of

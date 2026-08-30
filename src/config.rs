@@ -51,26 +51,21 @@ pub struct RelaySettings {
     pub credential: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct PeerConfigFile {
     pub force_relay_only: bool,
     pub relay: RelaySettings,
+    /// Extra ICE servers, advertised exactly as written and ahead of the derived ones.
+    ///
+    /// Empty by default, where this used to name Google's public STUN server. `resolve`
+    /// derives `stun:{host}` from the relay instead, so a deployment advertises its own
+    /// machine rather than a third party's. Two reasons, and the second is the one that
+    /// bites: every player of every deployment revealed their address to Google before a
+    /// word was spoken, and that server rate-limits -- from one maintainer's network it
+    /// answered once and then refused eight times running, while the identical request
+    /// from a datacentre succeeded every time.
     pub ice_servers: Vec<IceServer>,
-}
-
-impl Default for PeerConfigFile {
-    fn default() -> Self {
-        Self {
-            force_relay_only: false,
-            relay: RelaySettings::default(),
-            ice_servers: vec![IceServer {
-                urls: Urls::One("stun:stun.l.google.com:19302".to_owned()),
-                username: None,
-                credential: None,
-            }],
-        }
-    }
 }
 
 /// How long an issued TURN credential stays valid, when `TURN_TTL_SECONDS` says nothing.
@@ -304,6 +299,26 @@ impl PeerConfigFile {
         let mut ephemeral = None;
 
         if self.relay.enabled {
+            // The relay doubles as this deployment's STUN server. RFC 8656 §3.1 requires a
+            // TURN server to answer a plain Binding request, and this one does -- measured
+            // against the live deployment from outside its own network rather than assumed.
+            //
+            // Derived from the relay's host rather than written down, so that a deployment
+            // which is not this one advertises its own relay and not somebody else's.
+            //
+            // Worth naming even though the Allocate response already carries
+            // XOR-MAPPED-ADDRESS: when the allocation itself fails -- 486 Allocation Quota
+            // Reached, which is temporary and frees up when somebody leaves -- a plain
+            // Binding still yields a server-reflexive candidate, and a direct path is
+            // exactly what that client should be trying for.
+            if let Some(host) = relay_host.as_deref() {
+                ice_servers.push(IceServer {
+                    urls: Urls::One(format!("stun:{host}:{relay_port}")),
+                    username: None,
+                    credential: None,
+                });
+            }
+
             match relay_host {
                 None => {
                     tracing::error!(
@@ -351,6 +366,16 @@ impl PeerConfigFile {
                     }
                 }
             }
+        }
+
+        // Silence here used to be impossible, because there was always a default STUN
+        // server. Now it is reachable -- no relay and no `[[ice_servers]]` -- and it is
+        // worth a line, because the symptom is a lobby where every player connects to the
+        // ones sharing their network and to nobody else, with nothing logged anywhere.
+        if ice_servers.is_empty() && ephemeral.is_none() {
+            tracing::warn!(
+                "no ICE servers will be advertised: with no STUN server a client offers only its                  local addresses, so only players on the same network will hear each other.                  Enable the relay, or add an [[ice_servers]] entry to the peer config."
+            );
         }
 
         PeerConfigProvider {
@@ -586,7 +611,9 @@ mod ephemeral_turn_tests {
         assert_eq!(
             urls,
             vec![
-                &Urls::One("stun:stun.l.google.com:19302".to_owned()),
+                // Derived from the relay's own host, which is the whole list now that
+                // the default no longer names a public STUN server.
+                &Urls::One("stun:turn.example.com:3478".to_owned()),
                 &Urls::One("turn:turn.example.com:3478?transport=udp".to_owned()),
                 &Urls::One("turn:turn.example.com:3478?transport=tcp".to_owned()),
             ]
@@ -697,11 +724,16 @@ mod peer_config_tests {
 
     use super::*;
 
-    /// What the Node server this replaces sends today, measured from the running one at
-    /// aucl.greluc.me on 2026-08-24. The Rust server has to produce the same bytes: the
-    /// clients that read it are already deployed, and a field renamed or a type changed is
-    /// a lobby that silently falls back to STUN only.
-    const LIVE: &str = r#"{"forceRelayOnly":false,"iceServers":[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:aucl.greluc.me:3478?transport=udp","username":"aucl","credential":"secret"},{"urls":"turn:aucl.greluc.me:3478?transport=tcp","username":"aucl","credential":"secret"}]}"#;
+    /// The shape the deployed clients read, first measured from the Node server this
+    /// replaces at aucl.greluc.me on 2026-08-24. What is under test is the *shape*: the
+    /// clients are already out there, and a field renamed or a type changed is a lobby
+    /// that silently falls back to STUN only.
+    ///
+    /// **Changed on 2026-08-30**, and the change is in the value rather than the shape:
+    /// the first entry was `stun:stun.l.google.com:19302` and is now the relay's own host.
+    /// A client cannot tell the difference structurally -- it is one more `stun:` URL --
+    /// so this stays a fair test of the contract.
+    const LIVE: &str = r#"{"forceRelayOnly":false,"iceServers":[{"urls":"stun:aucl.greluc.me:3478"},{"urls":"turn:aucl.greluc.me:3478?transport=udp","username":"aucl","credential":"secret"},{"urls":"turn:aucl.greluc.me:3478?transport=tcp","username":"aucl","credential":"secret"}]}"#;
 
     fn from_toml(text: &str) -> PeerConfigFile {
         toml::from_str(text).expect("the example parses")
@@ -712,9 +744,6 @@ mod peer_config_tests {
         let config = from_toml(
             r#"
             force_relay_only = false
-
-            [[ice_servers]]
-            urls = "stun:stun.l.google.com:19302"
 
             [relay]
             enabled = true
@@ -741,7 +770,7 @@ mod peer_config_tests {
         let config = from_toml(
             r#"
             [[ice_servers]]
-            urls = "stun:stun.l.google.com:19302"
+            urls = "stun:stun.example.com:3478"
 
             [relay]
             enabled = true
@@ -757,19 +786,25 @@ mod peer_config_tests {
                 ..Default::default()
             })
             .issue("test-client");
-        assert_eq!(resolved.ice_servers.len(), 3);
+        assert_eq!(resolved.ice_servers.len(), 4);
+        // The file's own entry, still first and still untouched: deriving one from the
+        // relay must add to what the operator asked for, not quietly replace it.
         assert!(matches!(
             &resolved.ice_servers[0].urls,
-            Urls::One(url) if url.starts_with("stun:")
+            Urls::One(url) if url == "stun:stun.example.com:3478"
+        ));
+        assert!(matches!(
+            &resolved.ice_servers[1].urls,
+            Urls::One(url) if url == "stun:example.com:3478"
         ));
         // UDP before TCP: ICE tries them in the order it is given, and everyone who can
         // use UDP should.
         assert!(matches!(
-            &resolved.ice_servers[1].urls,
+            &resolved.ice_servers[2].urls,
             Urls::One(url) if url == "turn:example.com:3478?transport=udp"
         ));
         assert!(matches!(
-            &resolved.ice_servers[2].urls,
+            &resolved.ice_servers[3].urls,
             Urls::One(url) if url == "turn:example.com:3478?transport=tcp"
         ));
     }
@@ -779,7 +814,7 @@ mod peer_config_tests {
         let config = from_toml(
             r#"
             [[ice_servers]]
-            urls = "stun:stun.l.google.com:19302"
+            urls = "stun:stun.example.com:3478"
 
             [relay]
             enabled = false
@@ -833,7 +868,7 @@ mod peer_config_tests {
         let config = from_toml(
             r#"
             [[ice_servers]]
-            urls = "stun:stun.l.google.com:19302"
+            urls = "stun:stun.example.com:3478"
 
             [relay]
             enabled = true
@@ -855,6 +890,11 @@ mod peer_config_tests {
     fn the_example_file_parses_and_advertises_nothing_by_default() {
         // Shipping an example that does not parse is a deployment that fails at start-up,
         // and shipping one with the relay on is a server handing out empty credentials.
+        //
+        // "Nothing" is now literally nothing rather than one public STUN server. The
+        // hostname below is deliberately supplied and still produces no entry: the STUN
+        // entry follows the *relay*, and an operator who has not enabled one is not
+        // quietly given a server they never asked for.
         let text = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/peerConfig.example.toml"),
         )
@@ -869,7 +909,7 @@ mod peer_config_tests {
                 ..Default::default()
             })
             .issue("test-client");
-        assert_eq!(resolved.ice_servers.len(), 1);
+        assert_eq!(resolved.ice_servers.len(), 0);
     }
 
     #[test]
@@ -877,7 +917,7 @@ mod peer_config_tests {
         // A configuration mistake should not take a server that was running fine offline.
         let config = PeerConfigFile::load(std::path::Path::new("no/such/peerConfig.toml"));
         assert!(!config.relay.enabled);
-        assert_eq!(config.ice_servers.len(), 1);
+        assert_eq!(config.ice_servers.len(), 0);
     }
 
     #[test]

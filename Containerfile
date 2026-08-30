@@ -143,8 +143,9 @@ COPY --from=builder /build/acl-healthcheck /app/acl-healthcheck
 # The example configuration ships so that an operator can `podman cp` it out of the
 # image — with no shell there is no other way to read it — and so that the mount point
 # exists whether or not a real config is mounted over it. With no `peerConfig.toml`
-# present the server logs that fact and serves its built-in STUN default, so the image
-# is runnable as-is.
+# present the server logs that fact and starts anyway, advertising no ICE servers at
+# all, so the image is runnable as-is — though clients would then reach only the players
+# sharing their network.
 COPY config/peerConfig.example.toml /app/config/peerConfig.example.toml
 
 # BIND is 0.0.0.0 here and 127.0.0.1 everywhere else, and the difference is not a
